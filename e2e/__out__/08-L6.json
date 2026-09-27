@@ -1,0 +1,1304 @@
+{
+  "type": "Prog",
+  "defs": [
+    {
+      "type": "DefVal",
+      "name": "fact",
+      "value": {
+        "type": "Lam",
+        "params": [
+          {
+            "type": "Param",
+            "name": "n",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 3,
+              "col": 15
+            }
+          }
+        ],
+        "body": {
+          "type": "If",
+          "cond": {
+            "type": "Prim",
+            "op": "<",
+            "args": [
+              {
+                "type": "Var",
+                "name": "n",
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 4,
+                  "col": 10
+                }
+              },
+              {
+                "type": "Int",
+                "value": 2,
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 4,
+                  "col": 12
+                }
+              }
+            ],
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 4,
+              "col": 7
+            }
+          },
+          "then": {
+            "type": "Int",
+            "value": 1,
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 5,
+              "col": 7
+            }
+          },
+          "alt": {
+            "type": "Prim",
+            "op": "*",
+            "args": [
+              {
+                "type": "Var",
+                "name": "n",
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 6,
+                  "col": 10
+                }
+              },
+              {
+                "type": "Call",
+                "fn": {
+                  "type": "Var",
+                  "name": "fact",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 6,
+                    "col": 13
+                  }
+                },
+                "args": [
+                  {
+                    "type": "Prim",
+                    "op": "-",
+                    "args": [
+                      {
+                        "type": "Var",
+                        "name": "n",
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 6,
+                          "col": 21
+                        }
+                      },
+                      {
+                        "type": "Int",
+                        "value": 1,
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 6,
+                          "col": 23
+                        }
+                      }
+                    ],
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 6,
+                      "col": 18
+                    }
+                  }
+                ],
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 6,
+                  "col": 12
+                }
+              }
+            ],
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 6,
+              "col": 7
+            }
+          },
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 4,
+            "col": 3
+          }
+        },
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 3,
+          "col": 1
+        }
+      },
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 3,
+        "col": 1
+      }
+    },
+    {
+      "type": "DefVal",
+      "name": "classify",
+      "value": {
+        "type": "Lam",
+        "params": [
+          {
+            "type": "Param",
+            "name": "n",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 8,
+              "col": 19
+            }
+          }
+        ],
+        "body": {
+          "type": "If",
+          "cond": {
+            "type": "Prim",
+            "op": "<",
+            "args": [
+              {
+                "type": "Var",
+                "name": "n",
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 9,
+                  "col": 13
+                }
+              },
+              {
+                "type": "Int",
+                "value": 0,
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 9,
+                  "col": 15
+                }
+              }
+            ],
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 9,
+              "col": 10
+            }
+          },
+          "then": {
+            "type": "Str",
+            "value": "neg",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 9,
+              "col": 18
+            }
+          },
+          "alt": {
+            "type": "If",
+            "cond": {
+              "type": "Prim",
+              "op": "=",
+              "args": [
+                {
+                  "type": "Var",
+                  "name": "n",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 10,
+                    "col": 13
+                  }
+                },
+                {
+                  "type": "Int",
+                  "value": 0,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 10,
+                    "col": 15
+                  }
+                }
+              ],
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 10,
+                "col": 10
+              }
+            },
+            "then": {
+              "type": "Str",
+              "value": "zero",
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 10,
+                "col": 18
+              }
+            },
+            "alt": {
+              "type": "Str",
+              "value": "pos",
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 11,
+                "col": 15
+              }
+            },
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 9,
+              "col": 3
+            }
+          },
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 9,
+            "col": 3
+          }
+        },
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 8,
+          "col": 1
+        }
+      },
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 8,
+        "col": 1
+      }
+    },
+    {
+      "type": "DefVal",
+      "name": "scale",
+      "value": {
+        "type": "Lam",
+        "params": [
+          {
+            "type": "Param",
+            "name": "x",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli:13: lambda 的参数表",
+              "line": 13,
+              "col": 24
+            }
+          }
+        ],
+        "body": {
+          "type": "Let",
+          "bindings": [
+            {
+              "type": "Bind",
+              "name": "a",
+              "value": {
+                "type": "Prim",
+                "op": "*",
+                "args": [
+                  {
+                    "type": "Var",
+                    "name": "x",
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:13: let* 的绑定表",
+                      "line": 13,
+                      "col": 40
+                    }
+                  },
+                  {
+                    "type": "Int",
+                    "value": 2,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:13: let* 的绑定表",
+                      "line": 13,
+                      "col": 42
+                    }
+                  }
+                ],
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli:13: let* 的绑定表",
+                  "line": 13,
+                  "col": 37
+                }
+              },
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 13,
+                "col": 27
+              }
+            }
+          ],
+          "body": {
+            "type": "Let",
+            "bindings": [
+              {
+                "type": "Bind",
+                "name": "b",
+                "value": {
+                  "type": "Prim",
+                  "op": "+",
+                  "args": [
+                    {
+                      "type": "Var",
+                      "name": "a",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli:13: let* 的绑定表",
+                        "line": 13,
+                        "col": 52
+                      }
+                    },
+                    {
+                      "type": "Int",
+                      "value": 1,
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli:13: let* 的绑定表",
+                        "line": 13,
+                        "col": 54
+                      }
+                    }
+                  ],
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:13: let* 的绑定表",
+                    "line": 13,
+                    "col": 49
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 13,
+                  "col": 27
+                }
+              }
+            ],
+            "body": {
+              "type": "Var",
+              "name": "b",
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 13,
+                "col": 59
+              }
+            },
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 13,
+              "col": 27
+            }
+          },
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 13,
+            "col": 27
+          }
+        },
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 13,
+          "col": 15
+        }
+      },
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 13,
+        "col": 1
+      }
+    },
+    {
+      "type": "DefVal",
+      "name": "even?",
+      "value": {
+        "type": "Lam",
+        "params": [
+          {
+            "type": "Param",
+            "name": "n",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 15,
+              "col": 16
+            }
+          }
+        ],
+        "body": {
+          "type": "Letrec",
+          "bindings": [
+            {
+              "type": "Bind",
+              "name": "ev?",
+              "value": {
+                "type": "Lam",
+                "params": [
+                  {
+                    "type": "Param",
+                    "name": "k",
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表:16: lambda 的参数表",
+                      "line": 16,
+                      "col": 26
+                    }
+                  }
+                ],
+                "body": {
+                  "type": "If",
+                  "cond": {
+                    "type": "Prim",
+                    "op": "=",
+                    "args": [
+                      {
+                        "type": "Var",
+                        "name": "k",
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 16,
+                          "col": 36
+                        }
+                      },
+                      {
+                        "type": "Int",
+                        "value": 0,
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 16,
+                          "col": 38
+                        }
+                      }
+                    ],
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 16,
+                      "col": 33
+                    }
+                  },
+                  "then": {
+                    "type": "Bool",
+                    "value": true,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 16,
+                      "col": 41
+                    }
+                  },
+                  "alt": {
+                    "type": "Call",
+                    "fn": {
+                      "type": "Var",
+                      "name": "od?",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli:16: letrec 的绑定表",
+                        "line": 16,
+                        "col": 45
+                      }
+                    },
+                    "args": [
+                      {
+                        "type": "Prim",
+                        "op": "-",
+                        "args": [
+                          {
+                            "type": "Var",
+                            "name": "k",
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli:16: letrec 的绑定表",
+                              "line": 16,
+                              "col": 52
+                            }
+                          },
+                          {
+                            "type": "Int",
+                            "value": 1,
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli:16: letrec 的绑定表",
+                              "line": 16,
+                              "col": 54
+                            }
+                          }
+                        ],
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 16,
+                          "col": 49
+                        }
+                      }
+                    ],
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 16,
+                      "col": 44
+                    }
+                  },
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:16: letrec 的绑定表",
+                    "line": 16,
+                    "col": 29
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli:16: letrec 的绑定表",
+                  "line": 16,
+                  "col": 17
+                }
+              },
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli:16: letrec 的绑定表",
+                "line": 16,
+                "col": 12
+              }
+            },
+            {
+              "type": "Bind",
+              "name": "od?",
+              "value": {
+                "type": "Lam",
+                "params": [
+                  {
+                    "type": "Param",
+                    "name": "k",
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表:17: lambda 的参数表",
+                      "line": 17,
+                      "col": 26
+                    }
+                  }
+                ],
+                "body": {
+                  "type": "If",
+                  "cond": {
+                    "type": "Prim",
+                    "op": "=",
+                    "args": [
+                      {
+                        "type": "Var",
+                        "name": "k",
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 17,
+                          "col": 36
+                        }
+                      },
+                      {
+                        "type": "Int",
+                        "value": 0,
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 17,
+                          "col": 38
+                        }
+                      }
+                    ],
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 17,
+                      "col": 33
+                    }
+                  },
+                  "then": {
+                    "type": "Bool",
+                    "value": false,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 17,
+                      "col": 41
+                    }
+                  },
+                  "alt": {
+                    "type": "Call",
+                    "fn": {
+                      "type": "Var",
+                      "name": "ev?",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli:16: letrec 的绑定表",
+                        "line": 17,
+                        "col": 45
+                      }
+                    },
+                    "args": [
+                      {
+                        "type": "Prim",
+                        "op": "-",
+                        "args": [
+                          {
+                            "type": "Var",
+                            "name": "k",
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli:16: letrec 的绑定表",
+                              "line": 17,
+                              "col": 52
+                            }
+                          },
+                          {
+                            "type": "Int",
+                            "value": 1,
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli:16: letrec 的绑定表",
+                              "line": 17,
+                              "col": 54
+                            }
+                          }
+                        ],
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli:16: letrec 的绑定表",
+                          "line": 17,
+                          "col": 49
+                        }
+                      }
+                    ],
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli:16: letrec 的绑定表",
+                      "line": 17,
+                      "col": 44
+                    }
+                  },
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:16: letrec 的绑定表",
+                    "line": 17,
+                    "col": 29
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli:16: letrec 的绑定表",
+                  "line": 17,
+                  "col": 17
+                }
+              },
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli:16: letrec 的绑定表",
+                "line": 17,
+                "col": 12
+              }
+            }
+          ],
+          "body": {
+            "type": "Call",
+            "fn": {
+              "type": "Var",
+              "name": "ev?",
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 18,
+                "col": 6
+              }
+            },
+            "args": [
+              {
+                "type": "Var",
+                "name": "n",
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 18,
+                  "col": 10
+                }
+              }
+            ],
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 18,
+              "col": 5
+            }
+          },
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 16,
+            "col": 3
+          }
+        },
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 15,
+          "col": 1
+        }
+      },
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 15,
+        "col": 1
+      }
+    },
+    {
+      "type": "DefVal",
+      "name": "f",
+      "value": {
+        "type": "Lam",
+        "params": [
+          {
+            "type": "Param",
+            "name": "n",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 20,
+              "col": 12
+            }
+          }
+        ],
+        "body": {
+          "type": "Let",
+          "bindings": [
+            {
+              "type": "Bind",
+              "name": "x",
+              "value": {
+                "type": "If",
+                "cond": {
+                  "type": "Bool",
+                  "value": true,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 21,
+                    "col": 18
+                  }
+                },
+                "then": {
+                  "type": "Int",
+                  "value": 1,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 21,
+                    "col": 21
+                  }
+                },
+                "alt": {
+                  "type": "Void",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 21,
+                    "col": 12
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli:21: let 的绑定表",
+                  "line": 21,
+                  "col": 12
+                }
+              },
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli:21: let 的绑定表",
+                "line": 21,
+                "col": 9
+              }
+            },
+            {
+              "type": "Bind",
+              "name": "y",
+              "value": {
+                "type": "If",
+                "cond": {
+                  "type": "Bool",
+                  "value": false,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 22,
+                    "col": 20
+                  }
+                },
+                "then": {
+                  "type": "Void",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 22,
+                    "col": 12
+                  }
+                },
+                "alt": {
+                  "type": "Int",
+                  "value": 2,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli:21: let 的绑定表",
+                    "line": 22,
+                    "col": 23
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli:21: let 的绑定表",
+                  "line": 22,
+                  "col": 12
+                }
+              },
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli:21: let 的绑定表",
+                "line": 22,
+                "col": 9
+              }
+            }
+          ],
+          "body": {
+            "type": "Begin",
+            "exprs": [
+              {
+                "type": "If",
+                "cond": {
+                  "type": "Call",
+                  "fn": {
+                    "type": "Var",
+                    "name": ">",
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 24,
+                      "col": 13
+                    }
+                  },
+                  "args": [
+                    {
+                      "type": "Var",
+                      "name": "x",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 15
+                      }
+                    },
+                    {
+                      "type": "Int",
+                      "value": 0,
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 17
+                      }
+                    }
+                  ],
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 24,
+                    "col": 12
+                  }
+                },
+                "then": {
+                  "type": "Let",
+                  "bindings": [
+                    {
+                      "type": "Bind",
+                      "name": "$or1",
+                      "value": {
+                        "type": "Prim",
+                        "op": "<",
+                        "args": [
+                          {
+                            "type": "Var",
+                            "name": "y",
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli",
+                              "line": 24,
+                              "col": 27
+                            }
+                          },
+                          {
+                            "type": "Int",
+                            "value": 10,
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli",
+                              "line": 24,
+                              "col": 29
+                            }
+                          }
+                        ],
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 24,
+                          "col": 24
+                        }
+                      },
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 20
+                      }
+                    }
+                  ],
+                  "body": {
+                    "type": "If",
+                    "cond": {
+                      "type": "Var",
+                      "name": "$or1",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 20
+                      }
+                    },
+                    "then": {
+                      "type": "Var",
+                      "name": "$or1",
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 20
+                      }
+                    },
+                    "alt": {
+                      "type": "If",
+                      "cond": {
+                        "type": "Prim",
+                        "op": "=",
+                        "args": [
+                          {
+                            "type": "Var",
+                            "name": "x",
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli",
+                              "line": 24,
+                              "col": 41
+                            }
+                          },
+                          {
+                            "type": "Var",
+                            "name": "y",
+                            "__lang__": "L6",
+                            "__meta__": {
+                              "file": "demo.tli",
+                              "line": 24,
+                              "col": 43
+                            }
+                          }
+                        ],
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 24,
+                          "col": 38
+                        }
+                      },
+                      "then": {
+                        "type": "Bool",
+                        "value": false,
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 24,
+                          "col": 33
+                        }
+                      },
+                      "alt": {
+                        "type": "Bool",
+                        "value": true,
+                        "__lang__": "L6",
+                        "__meta__": {
+                          "file": "demo.tli",
+                          "line": 24,
+                          "col": 33
+                        }
+                      },
+                      "__lang__": "L6",
+                      "__meta__": {
+                        "file": "demo.tli",
+                        "line": 24,
+                        "col": 33
+                      }
+                    },
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 24,
+                      "col": 20
+                    }
+                  },
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 24,
+                    "col": 20
+                  }
+                },
+                "alt": {
+                  "type": "Bool",
+                  "value": false,
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 24,
+                    "col": 7
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 24,
+                  "col": 7
+                }
+              },
+              {
+                "type": "If",
+                "cond": {
+                  "type": "If",
+                  "cond": {
+                    "type": "Bool",
+                    "value": true,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 25,
+                      "col": 17
+                    }
+                  },
+                  "then": {
+                    "type": "Bool",
+                    "value": true,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 25,
+                      "col": 20
+                    }
+                  },
+                  "alt": {
+                    "type": "Void",
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 25,
+                      "col": 11
+                    }
+                  },
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 25,
+                    "col": 11
+                  }
+                },
+                "then": {
+                  "type": "Var",
+                  "name": "x",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 25,
+                    "col": 24
+                  }
+                },
+                "alt": {
+                  "type": "Void",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 25,
+                    "col": 7
+                  }
+                },
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 25,
+                  "col": 7
+                }
+              },
+              {
+                "type": "Call",
+                "fn": {
+                  "type": "Var",
+                  "name": "fact",
+                  "__lang__": "L6",
+                  "__meta__": {
+                    "file": "demo.tli",
+                    "line": 26,
+                    "col": 8
+                  }
+                },
+                "args": [
+                  {
+                    "type": "Int",
+                    "value": 5,
+                    "__lang__": "L6",
+                    "__meta__": {
+                      "file": "demo.tli",
+                      "line": 26,
+                      "col": 13
+                    }
+                  }
+                ],
+                "__lang__": "L6",
+                "__meta__": {
+                  "file": "demo.tli",
+                  "line": 26,
+                  "col": 7
+                }
+              }
+            ],
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 23,
+              "col": 5
+            }
+          },
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 21,
+            "col": 3
+          }
+        },
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 20,
+          "col": 1
+        }
+      },
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 20,
+        "col": 1
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "Call",
+      "fn": {
+        "type": "Var",
+        "name": "classify",
+        "__lang__": "L6",
+        "__meta__": {
+          "file": "demo.tli",
+          "line": 28,
+          "col": 2
+        }
+      },
+      "args": [
+        {
+          "type": "Call",
+          "fn": {
+            "type": "Var",
+            "name": "scale",
+            "__lang__": "L6",
+            "__meta__": {
+              "file": "demo.tli",
+              "line": 28,
+              "col": 12
+            }
+          },
+          "args": [
+            {
+              "type": "Float",
+              "value": 3.5,
+              "__lang__": "L6",
+              "__meta__": {
+                "file": "demo.tli",
+                "line": 28,
+                "col": 18
+              }
+            }
+          ],
+          "__lang__": "L6",
+          "__meta__": {
+            "file": "demo.tli",
+            "line": 28,
+            "col": 11
+          }
+        }
+      ],
+      "__lang__": "L6",
+      "__meta__": {
+        "file": "demo.tli",
+        "line": 28,
+        "col": 1
+      }
+    }
+  ],
+  "__lang__": "L6",
+  "__meta__": {
+    "file": "demo.tli",
+    "line": 28,
+    "col": 1
+  }
+}

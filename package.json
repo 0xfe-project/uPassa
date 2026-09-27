@@ -1,0 +1,25 @@
+{
+  "name": "nanopass-ts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "fmt": "prettier --write \"{src,e2e}/**/*.ts\"",
+    "fmt:check": "prettier --check \"{src,e2e}/**/*.ts\"",
+    "e2e": "node e2e/run.ts",
+    "perf": "node --expose-gc --stack-size=4000 e2e/perf.ts",
+    "e2e:tlispi": "node e2e/cli.ts",
+    "gen": "node e2e/gen.ts",
+    "gen:check": "node e2e/gen.ts && git diff --exit-code -- e2e/__out__",
+    "mutate": "node e2e/mutate.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2"
+  }
+}

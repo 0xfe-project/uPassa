@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    // 只允许"可擦除"的 TS 语法（类型注解、interface、import type…）。
+    // 为什么必须有：e2e 是**直接用 node 跑 .ts**（v24 的 strip-only 模式），
+    // 而 enum / namespace / 参数属性这些"要生成代码"的语法它不接受
+    // （ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX）。开着这个开关，这类语法在 pnpm check 就报，
+    // 不会等到运行时才炸。**踩过**：Bun 的 node shim 容忍它们，于是本机一路绿灯，
+    // 而 `pnpm e2e:tlispi` 在真 node 下直接起不来。
+    "erasableSyntaxOnly": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "lib": ["ESNext"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "e2e/**/*.ts"],
+  // 注意 `e2e/__out__/` **没有**被排除：里面的 `<名字>.pipeline.d.ts` 是产物的**接口**
+  // （实现是 .js，allowJs: false 不看它）。排除掉的话 import 产物就没类型了。
+  // The benchmarks are input to the compiler rather than sources of it: they are written the way people write
+  // TypeScript, which does not include this project's `noUncheckedIndexedAccess`. They are checked by being run.
+  "exclude": ["**/node_modules/**", "refs/**", "retsc/**", "packages/0xts-backend/benchmark/**"]
+}
