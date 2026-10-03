@@ -1,18 +1,20 @@
 /**
- * codegen：从语言声明的形状生成遍历器。
+ * codegen: Generate traversers from language declaration shapes.
  *
- * 生成的是一个 walk 函数 + 一个 rec。形状完全由两个语言的声明决定，
- * 所以你写的那些 handler 是黑的 —— 不读源码、不解析 TS、不 eval 用户代码。
+ * What's generated is a walk function + a rec. The shape is completely determined by the declarations
+ * of the two languages, so the handlers you write are black boxes — we don't read source code, don't parse TS,
+ * don't eval user code.
  *
- * 三件事在生成期就报错，不留到运行期：
- *   1. 输入语言里有个产生式，输出语言没有，而你又没给 handler
- *   2. identity 那条路上，输入/输出同一个 tag 的字段对不上
- *   3. 同一个 tag 出现在两个非终结符里 —— 那样 rec 就没法靠 tag 分派
+ * Three things error at generation time, not left to runtime:
+ *   1. Input language has a production, output language doesn't, and you didn't provide a handler
+ *   2. On the identity path, the fields don't match for the same tag in input/output
+ *   3. The same tag appears in two non-terminals — then rec can't dispatch by tag
  *
- * arity = 0 生成的是「节点进、节点出」。arity = k > 0 生成的是「节点 + k 个值进，
- * 节点 + k 个值出」，而且这 k 个值是**线程**的：一个子节点吐出来的 extra 直接当
- * 下一个兄弟节点的 extra 参数。所以 identity 子句不能写成 `a: walk(n.a), b: walk(n.b)`，
- * 得写成先调 a、把结果喂给 b 的几步赋值。
+ * arity = 0 generates "node in, node out". arity = k > 0 generates "node + k values in,
+ * node + k values out", and these k values are **threaded**: the extra returned by one child
+ * becomes the extra parameter for the next sibling. So identity clauses can't be written as
+ * `a: walk(n.a), b: walk(n.b)`, must be written as multiple assignment steps where a is called first
+ * and its result fed to b.
  */
 
 import type { FieldDesc, LangDecl, NodeOf } from "./lang.ts";
@@ -21,14 +23,14 @@ import type { Pass, Rec } from "./pass.ts";
 export class CodegenError extends Error {}
 
 /**
- * codegen 需要的东西。故意比 Pass 宽 —— 生成器只关心形状和元数，不关心类型参数。
- * Pass<F, O, Ctx> 结构上就满足它。
+ * What codegen needs. Intentionally wider than Pass — the generator only cares about shape and arity,
+ * not type parameters. Pass<F, O, Ctx> structurally satisfies this.
  */
 export interface WalkerSpec {
   readonly from: LangDecl;
   readonly to: LangDecl;
   readonly arity: number;
-  /** 额外参数的初值（每次 run 一份新的）。 */
+  /** Initial value for extra parameters (a fresh copy per run). */
   readonly init?: (() => unknown[]) | undefined;
   readonly rules: { readonly [nt: string]: { readonly [tag: string]: unknown } | undefined };
 }
@@ -41,7 +43,7 @@ function isNT(decl: LangDecl, name: string): boolean {
   return Object.prototype.hasOwnProperty.call(decl.rules, name);
 }
 
-/** 一个字段是子节点还是宿主值；子节点的话是哪种形状。 */
+/** Whether a field is a child node or a host value; if a child node, what shape. */
 type Shape =
   | { kind: "copy" }
   | { kind: "node"; nt: string }
@@ -53,13 +55,15 @@ function shapeOf(decl: LangDecl, d: FieldDesc, where: string): Shape {
   if ("list" in d) {
     const inner = d.list;
     if (typeof inner !== "string") {
-      throw new CodegenError(`[codegen] ${where}: 嵌套的 list 还不支持 —— 定义一层新的非终结符。`);
+      throw new CodegenError(
+        `[codegen] ${where}: nested list not yet supported — define a new non-terminal layer.`,
+      );
     }
     return isNT(decl, inner) ? { kind: "list", nt: inner } : { kind: "copy" };
   }
   const inner = d.maybe;
   if (typeof inner !== "string") {
-    throw new CodegenError(`[codegen] ${where}: 嵌套的 maybe 还不支持。`);
+    throw new CodegenError(`[codegen] ${where}: nested maybe not yet supported.`);
   }
   return isNT(decl, inner) ? { kind: "maybe", nt: inner } : { kind: "copy" };
 }
@@ -71,10 +75,10 @@ function sameShape(a: Shape, b: Shape): boolean {
 }
 
 function describe(sh: Shape): string {
-  return sh.kind === "copy" ? "宿主值" : `${sh.kind}:${(sh as { nt: string }).nt}`;
+  return sh.kind === "copy" ? "host value" : `${sh.kind}:${(sh as { nt: string }).nt}`;
 }
 
-/** 生成期检查：同一个 tag 不能属于两个非终结符，否则 rec 不知道往哪走。 */
+/** Generation-time check: same tag can't belong to two non-terminals, otherwise rec doesn't know where to go. */
 function checkTagUniqueness(spec: WalkerSpec): void {
   const seen = new Map<string, string>();
   for (const [nt, prods] of Object.entries(spec.from.rules)) {
@@ -82,8 +86,8 @@ function checkTagUniqueness(spec: WalkerSpec): void {
       const prev = seen.get(tag);
       if (prev !== undefined && prev !== nt) {
         throw new CodegenError(
-          `[${spec.from.id}] 产生式 ${s(tag)} 同时出现在非终结符 ${s(prev)} 和 ${s(nt)} 里。` +
-            `rec 靠 tag 分派，所以一个 tag 只能属于一个非终结符。`,
+          `[${spec.from.id}] production ${s(tag)} appears in both non-terminal ${s(prev)} and ${s(nt)}. ` +
+            `rec dispatches by tag, so a tag can only belong to one non-terminal.`,
         );
       }
       seen.set(tag, nt);
@@ -91,34 +95,35 @@ function checkTagUniqueness(spec: WalkerSpec): void {
   }
 }
 
-/** 检查输入/输出同一个 tag 的字段能不能对上。 */
+/** Check whether fields can match for the same tag in input/output. */
 function checkFields(spec: WalkerSpec, nt: string, tag: string, inProd: Prod, outProd: Prod): void {
   for (const [f, d] of Object.entries(inProd)) {
     if (!(f in outProd)) {
       throw new CodegenError(
-        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: 输入语言有这个字段，${spec.to.id} 没有。`,
+        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: input language has this field, ${spec.to.id} doesn't.`,
       );
     }
     const a = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
     const b = shapeOf(spec.to, outProd[f] as FieldDesc, `${nt}.${tag}.${f}`);
     if (!sameShape(a, b)) {
       throw new CodegenError(
-        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: 字段形状对不上（` +
-          `${describe(a)} vs ${describe(b)}）。identity 只能自动处理两边同形的字段，不同形就得自己写 handler。`,
+        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: field shapes don't match (` +
+          `${describe(a)} vs ${describe(b)}). identity can only handle same-shaped fields automatically; ` +
+          `different shapes require a handler.`,
       );
     }
   }
   for (const f of Object.keys(outProd)) {
     if (!(f in inProd)) {
       throw new CodegenError(
-        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: ${spec.to.id} 有这个字段而输入语言没有，` +
-          `identity 填不出来。`,
+        `[${spec.from.id} -> ${spec.to.id}] ${s(`${nt}.${tag}`)}.${f}: ${spec.to.id} has this field but input language doesn't, ` +
+          `identity can't fill it.`,
       );
     }
   }
 }
 
-/** 生成一条 identity 子句：照着输入字段递归，产出输出语言的节点。 */
+/** Generate an identity clause: recurse along input fields, produce output language node. */
 function emitIdentity(
   spec: WalkerSpec,
   nt: string,
@@ -128,8 +133,8 @@ function emitIdentity(
 ): string {
   if (outProd === undefined) {
     throw new CodegenError(
-      `[${spec.from.id} -> ${spec.to.id}] 产生式 ${s(`${nt}.${tag}`)} 在 ${spec.to.id} 里没有对应项，` +
-        `而你又没给 handler —— 要么加一条规则，要么把它从输入语言里去掉。`,
+      `[${spec.from.id} -> ${spec.to.id}] production ${s(`${nt}.${tag}`)} has no corresponding item in ${spec.to.id}, ` +
+        `and you didn't provide a handler — either add a rule or remove it from the input language.`,
     );
   }
   checkFields(spec, nt, tag, inProd, outProd);
@@ -139,20 +144,22 @@ function emitIdentity(
   const props: string[] = [`type: ${s(tag)}`];
   let tmp = 0;
 
-  // 同语言 pass 才允许"没改就返回原对象"。
+  // Only same-language passes allow "return original object if unchanged".
   //
-  // 为什么：换语言时 finish 会给节点打上新的 __lang__，复用原对象的话它的 __lang__
-  // 就留在旧语言上了 —— 那是语义变化，不是优化。同语言时 __lang__ 本来就一样，复用没差别。
+  // Why: when switching languages, finish stamps the node with the new __lang__; reusing the original
+  // object would leave its __lang__ on the old language — that's a semantic change, not an optimization.
+  // For same-language passes __lang__ is already the same, reuse makes no difference.
   //
-  // 好处有两个，都是真的：
-  //   ① 不动点判定可以只看根节点的**引用**（O(1)）—— 不用每轮全量深比较（t13 验收④）
-  //   ② 没动过的子树不再每过一遍就重新分配一遍
+  // Two benefits, both real:
+  //   ① Fixed-point determination can check just the root node's **reference** (O(1)) — no need for
+  //      full deep comparison each round (t13 acceptance ④)
+  //   ② Unchanged subtrees no longer reallocate on every pass
   const canReuse = spec.from.id === spec.to.id;
 
-  /** 逐元素比一遍引用 —— 列表也一样不能瞎重建。 */
+  /** Element-wise reference comparison — lists also shouldn't be rebuilt unnecessarily. */
   const sameList = `sameList`;
 
-  // k === 0：不收 extra，直接把子节点算好放进属性里，顺手记下"改没改"。
+  // k === 0: don't collect extra, compute child nodes and put them directly in properties, track "changed".
   if (k === 0) {
     const decls: string[] = [];
     const checks: string[] = [];
@@ -176,14 +183,15 @@ function emitIdentity(
       props.push(`${s(f)}: ${v}`);
     }
     const obj = `finish(n, { ${props.join(", ")} })`;
-    // 叶子节点（一个子字段都没有）永远"没变" —— 构造出来的对象和 n 结构相同，
-    // 那就是白分配。**这里不特判的话引用永远不等**，不动点判定就永远到不了（踩过）。
+    // Leaf nodes (no child fields at all) are always "unchanged" — the constructed object has the same
+    // structure as n, so it's a waste to allocate. **Without this special case, references will never
+    // be equal**, and fixed-point determination will never reach it (been there).
     const assign = !canReuse ? obj : checks.length === 0 ? "n" : `(${checks.join(" || ")}) ? ${obj} : n`;
     if (decls.length === 0) return `      out = ${assign};`;
     return `      {\n${indent(`${decls.join("\n")}\n${k === 0 ? "out" : "out"} = ${assign};`, "        ")}\n      }`;
   }
 
-  // k > 0：必须按顺序收 extra，所以得用语句。
+  // k > 0: must collect extra in order, so need statements.
   const stmts: string[] = [`let changed = false;`];
   for (const [f, d] of Object.entries(inProd)) {
     const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
@@ -229,12 +237,12 @@ function emitIdentity(
   return `      {\n${indent(body, "      ")}\n      }`;
 }
 
-/** `c0 = t[1]; c1 = t[2];` —— 把元组里的 extra 收回参数槽。 */
+/** `c0 = t[1]; c1 = t[2];` — unpack extra from tuple back into parameter slots. */
 function unpack(t: string, ctxVars: string[]): string {
   return ctxVars.map((c, i) => `${c} = ${t}[${i + 1}];`).join(" ");
 }
 
-/** 造返回值：没 extra 就是节点本身，有 extra 就是元组。 */
+/** Build return value: just the node itself if no extra, tuple if extra present. */
 function ret(node: string, ctxVars: string[]): string {
   return ctxVars.length === 0 ? node : `[${node}${ctxVars.map((c) => `, ${c}`).join("")}]`;
 }
@@ -246,7 +254,7 @@ function indent(text: string, pad: string): string {
     .join("\n");
 }
 
-/** 生成一条 handler 子句。handler 出来的节点由 finish 补 __lang__ 和 __meta__。 */
+/** Generate a handler clause. Node returned by handler gets __lang__ and __meta__ added by finish. */
 function emitHandler(spec: WalkerSpec, nt: string, tag: string): string {
   const k = spec.arity;
   const ctxVars = Array.from({ length: k }, (_, i) => `c${i}`);
@@ -277,24 +285,24 @@ function emitWalkerSrc(spec: WalkerSpec): string {
     const cases: string[] = [];
     for (const [tag, inProd] of Object.entries(prods)) {
       byTag[tag] = `walk_${nt}`;
-      if (typeof inProd === "string") continue; // 透明产生式，还没做
+      if (typeof inProd === "string") continue; // transparent production, not yet implemented
       const hasHandler = spec.rules[nt]?.[tag] !== undefined;
       const body = hasHandler
         ? emitHandler(spec, nt, tag)
         : emitIdentity(spec, nt, tag, inProd, spec.to.rules[nt]?.[tag] as Prod | undefined);
-      // return 改成赋值之后必须有 break —— 不然会穿透到 default 抛错
+      // After changing to assignment, must have break — otherwise will fall through to default throw
       cases.push(`    case ${s(tag)}: {\n${body}\n      break;\n    }`);
     }
     cases.push(
       `    default:\n` +
-        `      throw new Error("[${spec.from.id}] 非终结符 ${nt} 里没有产生式 " + n.type + ` +
-        `"（节点带 __lang__=" + n.__lang__ + "，" + whereOf(n) + "）");`,
+        `      throw new Error("[${spec.from.id}] non-terminal ${nt} has no production " + n.type + ` +
+        `" (node has __lang__=" + n.__lang__ + ", " + whereOf(n) + ")");`,
     );
     fns.push(
       `  function walk_${nt}(${fnParams}) {\n` +
         `    let out;\n` +
-        // 深度只用来**记住最深的那个节点** —— 溢出的时候拿它的位置报错。
-        // 不再往下传一个 depth 参数：那会改掉所有调用签名（连 handler 都得带上）。
+        // Depth is only used to **remember the deepest node** — to report its location on overflow.
+        // No longer pass a depth parameter down: that would change all call signatures (even handlers would need it).
         `    const d = ++depth;\n` +
         `    if (d > maxDepth) { maxDepth = d; deepest = n; }\n` +
         `    switch (n.type) {\n${cases.join("\n")}\n    }\n` +
@@ -316,14 +324,14 @@ function emitWalkerSrc(spec: WalkerSpec): string {
     const w = BY_TAG[x.type];
     if (w === undefined) {
       throw new Error(
-        "[${spec.from.id}] rec() 遇到不认识的产生式 " + x.type + "（__lang__=" + x.__lang__ + "，" + whereOf(x) + "）",
+        "[${spec.from.id}] rec() encountered unrecognized production " + x.type + " (__lang__=" + x.__lang__ + ", " + whereOf(x) + ")",
       );
     }
     return w(x);
   }`
       : `  function rec(x, ...c) {
     if (Array.isArray(x)) {
-      // 列表也是一样：一个元素的 extra 吐给下一个
+      // Lists work the same way: one element's extra feeds the next
       const out = [];
       for (const y of x) {
         const t = rec(y, ...c);
@@ -336,41 +344,42 @@ function emitWalkerSrc(spec: WalkerSpec): string {
     const w = BY_TAG[x.type];
     if (w === undefined) {
       throw new Error(
-        "[${spec.from.id}] rec() 遇到不认识的产生式 " + x.type + "（__lang__=" + x.__lang__ + "，" + whereOf(x) + "）",
+        "[${spec.from.id}] rec() encountered unrecognized production " + x.type + " (__lang__=" + x.__lang__ + ", " + whereOf(x) + ")",
       );
     }
     return w(x, ...c);
   }`;
 
-  return `// 由 codegen 生成，不要手改。改语言声明或 pass 的规则，然后重新生成。
-//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   （extra ${k} 个值，线程）` : ""}
+  return `// Generated by codegen, do not edit by hand. Change language declarations or pass rules, then regenerate.
+//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   (extra ${k} values, threaded)` : ""}
 function build(handlers, init) {
   const LANG = ${s(spec.to.id)};
 
-  // 深度只用来在**栈溢出时报告位置**，不做限制。
-  // 为什么不做限制：真正的边界取决于输入形状（纯 let 链能到几千层，宽节点更浅），
-  // 定一个静态阈值会误杀现在跑得过的输入。
+  // Depth is only used to **report location on stack overflow**, not to impose limits.
+  // Why not impose limits: the real boundary depends on input shape (pure let chains can go thousands
+  // of layers deep, wide nodes hit limits earlier). A static threshold would reject inputs that currently work.
   let depth = 0;
   let maxDepth = 0;
   let deepest = null;
 
   function whereOf(node) {
     const m = node && node.__meta__;
-    if (!m) return "（没有位置信息）";
+    if (!m) return "(no location info)";
     return (m.file ?? "?") + ":" + (m.line ?? "?") + (m.col !== undefined ? ":" + m.col : "");
   }
 
-  /** 把 RangeError: Maximum call stack size exceeded 换成能看懂的报错。 */
+  /** Convert RangeError: Maximum call stack size exceeded to a comprehensible error. */
   function guard(f) {
     try {
       return f();
     } catch (e) {
       if (e instanceof RangeError && /stack/i.test(String(e.message))) {
         const err = new Error(
-          "[${spec.from.id}] 输入嵌套太深：" +
+          "[${spec.from.id}] Input nested too deep: " +
             whereOf(deepest) +
-            "（走到 " + maxDepth + " 层就溢出了）。\\n" +
-            "  生成的遍历器是递归下树的，深度受 JS 调用栈限制。这不是输入错，是已知限制（t27 / t18）。",
+            " (reached " + maxDepth + " layers before overflow).\\n" +
+            "  Generated traverser recurses down the tree; depth is limited by JS call stack. " +
+            "This is not an input error, it's a known limitation (t27 / t18).",
         );
         err.name = "StackOverflow";
         throw err;
@@ -379,13 +388,15 @@ function build(handlers, init) {
     }
   }
 
-  // __lang__ / __meta__ 的补丁处。
+  // __lang__ / __meta__ patching point.
   //
-  // 只有顶层不够 —— handler 会在返回值里**新造**节点（比如 desugar 出的 Lam），那些也得带上
-  // __lang__ 和源位置。所以往下走，但**只走新造的**：已经有 __lang__ 的是 rec 的产物
-  // （上一个 walker 处理过、已经带好了），不再下去。
+  // Top level alone is not enough — handlers will **create new** nodes in the return value (e.g., desugared Lam),
+  // and those need __lang__ and source location too. So we walk down, but **only into newly created nodes**:
+  // nodes that already have __lang__ are products of rec (processed by previous walker, already stamped),
+  // we don't descend into them.
   //
-  // 所以代价是 O(本次新造的节点数)，不是 O(子树大小)。不这么写就是每节点走一遍子树 = O(n²)。
+  // So the cost is O(number of nodes created this time), not O(subtree size). Not doing this would be
+  // O(n²) — walking the subtree once per node.
   function finish(from, to) {
     if (to === null || typeof to !== "object" || Array.isArray(to)) return to;
     const meta = from !== null && from !== undefined ? from.__meta__ : undefined;
@@ -404,7 +415,7 @@ function build(handlers, init) {
       for (const y of x) stampFresh(y, meta);
       return;
     }
-    if (x.__lang__ !== undefined) return; // 已经处理过的子树，到此为止
+    if (x.__lang__ !== undefined) return; // already processed subtree, stop here
     x.__lang__ = LANG;
     if (x.__meta__ === undefined && meta !== undefined) x.__meta__ = meta;
     for (const k of Object.keys(x)) {
@@ -417,7 +428,7 @@ ${recSrc}
 
 ${fns.join("\n\n")}
 
-  /** 列表逐元素比引用 —— "没改就复用"要用。 */
+  /** List element-wise reference comparison — "reuse if unchanged" needs this. */
   function sameList(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -428,8 +439,8 @@ ${fns.join("\n\n")}
 ${byTagSrc}
   };
 
-  // extra 是这个 pass **内部**的通信（对应 nanopass 里 processor 的额外返回值），
-  // 所以 run 只把节点交出去 —— 拿初值开跑，extra 丢掉。
+  // extra is **internal** communication within this pass (corresponds to processor's extra return values
+  // in nanopass), so run only passes out the node — start with init value, discard extra.
   function run(x) {
     depth = 0;
     maxDepth = 0;
@@ -445,18 +456,19 @@ ${byTagSrc}
 `;
 }
 
-/** 把生成的源码编出来。生产形态是写文件；这里 new Function 是为了不留构建步骤。 */
+/** Compile generated source code. Production mode writes to file; here new Function is to avoid build step. */
 /**
- * 框架自己的测试用的 walker 入口。**生产路径不走这里**（那边走链接产物）。
+ * Walker entry point for the framework's own tests. **Production path doesn't use this** (that goes through linked artifacts).
  *
- * `rec` 的签名跟着 `Pass` 的类型走，不是 `unknown`：
- * - 输入是**入口非终结符**的节点（不是任意 unknown）—— 所以夹具写对了就能传进去，
- *   写错了（少个字段、tag 不在语言里）在调用点就报。以前这里收 `unknown`，于是
- *   `w.rec(TREE)` 这种调用点全得 `as never` 才活得下去，等于把检查关掉。
- * - 返回是**元组**（`Ret<…>` 的形状），调用点能 `[0]` / 解构，也不用 cast。
+ * `rec`'s signature follows the `Pass` type, not `unknown`:
+ * - Input is a node of the **entry non-terminal** (not arbitrary unknown) — so correctly written fixtures
+ *   can be passed in, incorrectly written ones (missing field, tag not in language) will error at call site.
+ *   Previously this accepted `unknown`, so call sites like `w.rec(TREE)` all needed `as never` to survive,
+ *   which effectively disabled checking.
+ * - Return is a **tuple** (`Ret<…>` shape), call sites can `[0]` / destructure, no cast needed.
  *
- * 一处例外：**数组字段**。`rec` 只收单个节点（t24 那个剩下的缺口），列表要走框架
- * 生成的那个列表 helper，在类型上是按 `never` 传的 —— 运行期没问题。
+ * One exception: **array fields**. `rec` only accepts single nodes (t24's remaining gap), lists go through
+ * the framework-generated list helper, which is typed as passing `never` — runtime works fine.
  */
 export function buildWalker<F extends LangDecl, O extends LangDecl, Ctx extends readonly unknown[] = []>(
   pass: Pass<F, O, Ctx>,
@@ -468,12 +480,12 @@ export function buildWalker<F extends LangDecl, O extends LangDecl, Ctx extends 
 }
 
 /**
- * **动态 spec** 的那条路：`handlers` 是运行期拼出来的（`rewrite.ts` 的规则引擎、
- * 框架自己的测试），类型上给不出 `Rules<…>`，所以这里进出都是 `unknown`。
+ * **Dynamic spec** path: `handlers` is assembled at runtime (rule engine in `rewrite.ts`,
+ * framework's own tests), can't provide `Rules<…>` type-wise, so input/output here are `unknown`.
  *
- * 为什么单独留一个入口，而不是让 `buildWalker` 收 `unknown`：那样**所有**调用点都跟着
- * 变松 —— 正经的 pass 也会退回"传错夹具在运行期才炸"。松的那条路要显式选，选的时候
- * 一眼看得出是有意为之。
+ * Why keep a separate entry point instead of having `buildWalker` accept `unknown`: that would make
+ * **all** call sites loose — even proper passes would regress to "wrong fixture only explodes at runtime".
+ * The loose path should be explicit choice, obvious when selected that it's intentional.
  */
 export function buildWalkerDynamic(spec: unknown): {
   run: (n: unknown) => unknown;
@@ -491,26 +503,26 @@ export function buildWalkerDynamic(spec: unknown): {
   return build(pass.rules, pass.init ?? (() => []));
 }
 
-// ───────────────────────── 生成器自检 ─────────────────────────
+// ───────────────────────── Generator self-check ─────────────────────────
 
 /**
- * 生成的源码在**交出去之前**先过一遍语法校验。
+ * Generated source code goes through syntax validation **before being handed out**.
  *
- * 为什么需要：写生成器时最惨的一类 bug 是"生成出来的源码是半截的" —— 比如模板字面量里
- * 想输出 `\n` 结果输出了真换行，把生成代码切成两截。那个 bug 我在同一个文件上踩了三次，
- * 每次都要等到 `new Function`（或者在运行期）才现形，而且报错是 `Unexpected EOF`，
- * 完全看不出是生成器哪一行的问题。
+ * Why needed: the worst class of bugs when writing generators is "generated source code is half-complete" —
+ * e.g., template literal intended to output `\n` but outputs actual newline, cutting generated code in half.
+ * I've hit this bug three times in the same file, each time only manifesting at `new Function` (or at runtime),
+ * and the error is `Unexpected EOF`, giving no clue which generator line is the problem.
  *
- * 这里当场 parse 一遍，报错时把出问题的行号连上下文一起带出来。
- * 代价是生成时多一次 parse —— 生成很罕见，无所谓。
+ * Here we parse once immediately, bringing line number + context into the error when it breaks.
+ * Cost is one extra parse at generation time — generation is rare, doesn't matter.
  */
 function checked(src: string, what: string): string {
   try {
     new Function(`${src}\nreturn build;`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // 定位：生成的代码里**引号不成对**的行，就是被切成两截的地方。
-    // （这类 bug 的唯一来源是模板字面量里的转义写错了 —— 我在同一个坑里踩过三次。）
+    // Locate: lines in generated code with **unpaired quotes** are where it got cut in half.
+    // (This class of bug's only source is wrong escaping in template literals — I've hit this three times in the same pit.)
     const lines = src.split("\n");
     const odd = lines
       .map((l, i) => [i + 1, l] as const)
@@ -518,50 +530,54 @@ function checked(src: string, what: string): string {
       .slice(0, 4);
     const where =
       odd.length > 0
-        ? `  引号不成对的行（断点就在这些行附近）：\n` +
+        ? `  Lines with unpaired quotes (breakpoint is near these lines):\n` +
           odd.map(([n, l]) => `  ${n}| ${l.slice(0, 110)}`).join("\n")
-        : `  没找到引号不成对的行（末端：${lines.slice(-2).join(" ⏎ ").slice(0, 110)}）`;
+        : `  No lines with unpaired quotes found (tail: ${lines.slice(-2).join(" ⏎ ").slice(0, 110)})`;
     throw new CodegenError(
-      `[codegen] 生成的源码（${what}）过不了语法检查：${msg}\n` +
-        `  共 ${lines.length} 行。\n${where}\n` +
-        `  生成器最常犯的错是模板字面量里的转义 —— 想输出 \\n 就得写 \\\\n，` +
-        `写成一个 \\n 会变成真换行，把生成代码切成两截。`,
+      `[codegen] Generated source code (${what}) failed syntax check: ${msg}\n` +
+        `  Total ${lines.length} lines.\n${where}\n` +
+        `  Most common generator mistake is template literal escaping — to output \\n you must write \\\\n, ` +
+        `writing just \\n becomes actual newline, cutting generated code in half.`,
     );
   }
   return src;
 }
 
-/** 生成单个 pass 的遍历器源码。 */
+/** Generate traverser source code for a single pass. */
 export function emitWalker(spec: WalkerSpec): string {
   return checked(emitWalkerSrc(spec), `${spec.from.id}->${spec.to.id}`);
 }
 
-/** 生成单个 pass 的遍历器源码（蹦床版：下树不占原生栈）。 */
+/** Generate traverser source code for a single pass (trampoline version: descent doesn't use native stack). */
 export function emitWalkerTramp(spec: WalkerSpec): string {
-  return checked(emitWalkerTrampSrc(spec), `蹦床 ${spec.from.id}->${spec.to.id}`);
+  return checked(emitWalkerTrampSrc(spec), `trampoline ${spec.from.id}->${spec.to.id}`);
 }
 
 /**
- * 蹦床版遍历器：**显式帧栈 + dispatch 循环**，identity 那条路上一个 JS 栈帧都不占。
+ * Trampoline walker: **explicit frame stack + dispatch loop**, identity path uses zero JS stack frames.
  *
- * ── 为什么要有它
+ * ── Why it exists
  *
- * 递归版（`emitWalkerSrc`）每节点一个原生栈帧，深输入会爆栈。常态用递归版（快），
- * **溢出时**才切到这个 —— 见 `e2e/runner.ts` 的逐 pass 兜底。
+ * Recursive version (`emitWalkerSrc`) uses one native stack frame per node, deep input blows stack.
+ * Use recursive version normally (faster), switch to this **on overflow** — see per-pass fallback
+ * in `e2e/runner.ts`.
  *
- * ── 它跟"融合"没有关系
+ * ── No relation to fusion
  *
- * 以前这段代码住在融合那一套里（"融合组的蹦床版"），单门 pass 用时走的也是同一段 ——
- * 因为单门就是一个元素的组。融合砍掉之后它拆出来独立成函数：**它就是"同一门 pass，
- * 换成迭代下树"**。跟融不融合无关，所以不该跟着融合一起走。
+ * This code previously lived in the fusion suite ("trampoline version of fusion group"), and was used
+ * for single-pass runs too — because single-pass is just a one-element group. After fusion was cut,
+ * it was extracted into standalone function: **it's "same pass, switch to iterative descent"**.
+ * Nothing to do with whether fusion happens or not, so shouldn't have followed fusion out.
  *
- * 代价：每节点多分配一个帧对象，实测比递归版慢 ~20%（t18 量过）。所以只当兜底。
+ * Cost: allocates one frame object per node, measured ~20% slower than recursive version (measured in t18).
+ * So only use as fallback.
  *
- * ── 还会占原生栈的地方
+ * ── Places that still use native stack
  *
- * handler 里的 `rec` 接到的是同一个蹦床（会开一层嵌套的 `drive`），所以子树遍历也是迭代的。
- * 唯一还会占原生栈的是「handler 里调 rec、子节点又有 handler」这种**嵌套** —— 层数等于
- * 路径上带 handler 的节点数。这条限制是真的，报错时说清楚（t18 / t27）。
+ * `rec` received in handlers goes to the same trampoline (opens nested `drive` layer), so subtree traversal
+ * is iterative too. The only place still using native stack is **nesting** of "handler calls rec, child also
+ * has handler" — layers equal to number of nodes with handlers on the path. This limitation is real, error
+ * message makes it clear (t18 / t27).
  */
 function emitWalkerTrampSrc(spec: WalkerSpec): string {
   checkTagUniqueness(spec);
@@ -570,12 +586,12 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
   const lang = spec.from.rules;
   const nts = Object.keys(lang);
 
-  // tag → 非终结符（tag 在一个语言里唯一，这是 checkTagUniqueness 保证的）
+  // tag → non-terminal (tag is unique in a language, guaranteed by checkTagUniqueness)
   const tagNt: Record<string, string> = {};
   for (const nt of nts) for (const tag of Object.keys(lang[nt]!)) tagNt[tag] = nt;
 
-  // tag → 子节点字段表，按声明顺序。驱动器靠它决定下降顺序。
-  // kind：n = 单个节点，l = 节点列表，m = 可选节点
+  // tag → child node field table, in declaration order. Driver uses this to determine descent order.
+  // kind: n = single node, l = node list, m = optional node
   const tagFields: Record<string, [string, string][]> = {};
   for (const nt of nts) {
     for (const [tag, inProd] of Object.entries(lang[nt]!)) {
@@ -591,20 +607,20 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
     }
   }
 
-  // 帧里放结果的槽位个数 = 所有 tag 里子节点字段最多的那个。
-  // 用编号槽位而不是一个数组：省掉每节点一次数组分配（热路径）。
+  // Number of result slots in frame = maximum child field count across all tags.
+  // Use numbered slots rather than array: saves per-node array allocation (hot path).
   const maxSlots = Math.max(1, ...Object.values(tagFields).map((f) => f.length));
   const slotNames = Array.from({ length: maxSlots }, (_, i) => `r${i}`);
   const slotInit = slotNames.map((n) => `${n}: undefined`).join(", ");
-  // 按 i 写槽位 —— 用 switch 而不是 fr["r" + i]：动态键会退化成字典查找
+  // Write to slot i — use switch instead of fr["r" + i]: dynamic keys degrade to dictionary lookup
   const slotCases = slotNames.map((n, i) => `      case ${i}: fr.${n} = v; return;`).join("\n");
 
-  // 同语言 → 允许"子节点一个都没变就返回原节点"。
-  // 和 emitWalkerSrc 的 identity 路径同一个理由：不动点判定要能一次 `===` 判定（t13），
-  // 顺带省掉没动过的子树的重分配。
+  // Same language → allow "return original node if no children changed".
+  // Same reason as identity path in emitWalkerSrc: fixed-point determination needs single `===` check (t13),
+  // bonus: saves reallocation of unchanged subtrees.
   const canReuse = spec.from.id === spec.to.id;
 
-  // identity 的构造：把收集到的子节点结果装进字面量。**这里没有递归** —— 子节点在槽里躺着。
+  // Identity construction: pack collected child node results into object literal. **No recursion here** — children are in slots.
   const buildCases: string[] = [];
   for (const nt of nts) {
     for (const [tag, inProd] of Object.entries(lang[nt]!)) {
@@ -628,22 +644,22 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
         }
       }
       const obj = `{ ${props.join(", ")} }`;
-      // 叶子永远"没变"，直接返回 n（不然引用永远不等）
+      // Leaf always "unchanged", return n directly (otherwise reference never equal)
       const built = !canReuse ? obj : checks.length === 0 ? "n" : `(${checks.join(" || ")}) ? ${obj} : n`;
       buildCases.push(`    case ${s(tag)}:\n      return ${built};`);
     }
   }
 
-  return `// 由 codegen 生成（蹦床版）。不要手改。改语言声明或 pass 的规则，然后重新生成。
-//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   （extra ${k} 个值，线程）` : ""}   （下树不占原生栈）
+  return `// Generated by codegen (trampoline version). Do not edit by hand. Change language declarations or pass rules, then regenerate.
+//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   (extra ${k} values, threaded)` : ""}   (descent doesn't use native stack)
 //
-// 显式帧栈 + dispatch 循环：identity 那条路上一个 JS 栈帧都不占。
-// handler 里的 rec 也接到同一个蹦床上（会开一层嵌套的 drive），所以子树遍历也是迭代的。
-// 唯一还会占原生栈的是「handler 里调 rec、子节点又有 handler」这种嵌套 —— 层数等于
-// 路径上带 handler 的节点数。
+// Explicit frame stack + dispatch loop: identity path uses zero JS stack frames.
+// rec in handlers also connects to same trampoline (opens nested drive layer), so subtree traversal is iterative too.
+// The only place still using native stack is nesting of "handler calls rec, child also has handler" — layers
+// equal to number of nodes with handlers on the path.
 function build(handlers, init) {
   const LANG = ${s(spec.to.id)};
-  /** 列表逐元素比引用 —— "没改就复用"用。 */
+  /** List element-wise reference comparison — "reuse if unchanged" needs this. */
   function sameList(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -657,14 +673,14 @@ ${Object.entries(tagNt)
   .join("\n")}
   };
 
-  // tag → 子节点字段表（按声明顺序）。kind: n 单节点 / l 列表 / m 可选
+  // tag → child node field table (in declaration order). kind: n single node / l list / m optional
   const FIELDS = {
 ${Object.entries(tagFields)
   .map(([tag, fields]) => `    ${s(tag)}: ${JSON.stringify(fields)},`)
   .join("\n")}
   };
 
-  // tag → handler 的**平表**。省掉每次按非终结符再查一层。
+  // tag → handler **flat map**. Saves looking up per-nonterminal layer every time.
   const H = Object.create(null);
   for (const tag in TAG_NT) {
     const per = handlers[TAG_NT[tag]];
@@ -672,11 +688,12 @@ ${Object.entries(tagFields)
     if (h !== undefined) H[tag] = h;
   }
 
-  // __lang__ / __meta__ 的补丁处。
+  // __lang__ / __meta__ patching point.
   //
-  // 只有顶层不够 —— handler 会在返回值里**新造**节点（比如 desugar 出的 Lam），那些也得带上
-  // __lang__ 和源位置。所以往下走，但**只走新造的**：已经有 __lang__ 的是上一轮的产物。
-  // 代价是 O(本次新造的节点数)，不是 O(子树大小)。
+  // Top level alone is not enough — handlers will **create new** nodes in the return value (e.g., desugared Lam),
+  // and those need __lang__ and source location too. So we walk down, but **only into newly created nodes**:
+  // nodes that already have __lang__ are products from previous round.
+  // Cost is O(number of nodes created this time), not O(subtree size).
   function finish(from, to) {
     if (to === null || typeof to !== "object" || Array.isArray(to)) return to;
     const meta = from !== null && from !== undefined ? from.__meta__ : undefined;
@@ -705,19 +722,19 @@ ${Object.entries(tagFields)
     switch (tag) {
 ${buildCases.join("\n")}
     default:
-      throw new Error("[${spec.from.id}] 没有产生式 " + tag + " 的构造子");
+      throw new Error("[${spec.from.id}] no constructor for production " + tag);
     }
   }
 
-  // ── 蹦床 ──
+  // ── Trampoline ──
   //
-  // 帧的形状（只有一个对象类型、字段固定，所以隐藏类是稳定的）：
+  // Frame shape (only one object type, fixed fields, so hidden class is stable):
   //   { node, fs, i, li, lacc, ctx, r0..rn }
-  //   fs   这个 tag 的子节点字段表
-  //   i    正在处理第几个字段
-  //   li   列表字段走到第几个元素；lacc 是攒到一半的数组（null = 还没开始）
+  //   fs   child node field table for this tag
+  //   i    processing which field
+  //   li   reached which element in list field; lacc is accumulator array (null = not started yet)
 
-  /** 找出这一帧下一个要下降的**节点**；没有就返回 undefined（这一帧可以收尾了）。 */
+  /** Find next **node** to descend into for this frame; return undefined if none (frame can finalize). */
   function takeChild(fr) {
     for (;;) {
       if (fr.i >= fr.fs.length) return undefined;
@@ -731,7 +748,7 @@ ${buildCases.join("\n")}
         if (v === undefined) { fr.i += 1; continue; }
         return v;
       }
-      // 列表
+      // list
       if (fr.lacc === null) { fr.lacc = []; fr.li = 0; }
       if (fr.li < v.length) { const x = v[fr.li]; fr.li += 1; return x; }
       setSlot(fr, fr.i, fr.lacc);
@@ -740,16 +757,16 @@ ${buildCases.join("\n")}
     }
   }
 
-  /** 按槽位号写结果。用 switch 而不是动态键：动态键会退化成字典查找。 */
+  /** Write result by slot number. Use switch instead of dynamic key: dynamic key degrades to dictionary lookup. */
   function setSlot(fr, i, v) {
     switch (i) {
 ${slotCases}
       default:
-        throw new Error("[${spec.from.id}] 槽位越界 " + i);
+        throw new Error("[${spec.from.id}] slot out of bounds " + i);
     }
   }
 
-  /** 收下一个子节点的结果。K > 0 时 value 是 [节点, ...extra]，extra 串给下一个兄弟。 */
+  /** Accept next child node result. When K > 0, value is [node, ...extra], extra threaded to next sibling. */
   function accept(fr, value) {
     if (K > 0) fr.ctx = value.slice(1);
     const node0 = K > 0 ? value[0] : value;
@@ -758,15 +775,15 @@ ${slotCases}
     fr.i += 1;
   }
 
-  /** 这一帧收尾：跑 handler（或者 identity），把槽里的子节点装回一个节点。 */
+  /** Finalize this frame: run handler (or identity), pack child nodes from slots back into a node. */
   function buildOne(fr) {
     const tag = fr.node.type;
     const h = H[tag];
     let v;
     if (h !== undefined) {
-      // handler 是黑的（叶子）：它的 rec 拿到的是**这个蹦床**，所以子树还是迭代的。
-      // K > 0 时它返回的是元组 [节点, ...extra]，finish 只能作用在节点上 ——
-      // 直接把元组喂给 finish 会被当成"数组，原样返回"，然后整个元组被塞进字段里。
+      // handler is black box (leaf): its rec connects to **this trampoline**, so subtree is still iterative.
+      // When K > 0 it returns tuple [node, ...extra], finish can only act on node —
+      // directly feeding tuple to finish treats it as "array, return as-is", then entire tuple gets stuffed into field.
       if (K > 0) {
         const t = h(fr.node, drive, ...fr.ctx);
         v = finish(fr.node, t[0]);
@@ -784,18 +801,18 @@ ${slotCases}
 
   function whereOf(node) {
     const m = node && node.__meta__;
-    if (!m) return "（没有位置信息）";
+    if (!m) return "(no location info)";
     return (m.file ?? "?") + ":" + (m.line ?? "?") + (m.col !== undefined ? ":" + m.col : "");
   }
 
-  // 有 handler 的 tag 当成叶子：**驱动器不下降**，handler 自己会调 rec。
-  // 不这么写就会下降一遍、handler 里又 rec 一遍 —— 子节点被处理两次
-  // （不幂等的 pass 立刻出问题：临时名会多走一格）。
+  // Tags with handlers are treated as leaves: **driver doesn't descend**, handler calls rec itself.
+  // Not doing this would descend once, then handler rec's again — child nodes processed twice
+  // (non-idempotent passes break immediately: temp names advance one extra step).
   const NO_CHILDREN = [];
 
   function drive(root, ...ctx0) {
-    // 列表：跟单 pass 的 rec 一样 —— 一个元素的 extra 吐给下一个（顺序保持）。
-    // **漏了这个分支会炸在"不认识的产生式 undefined"上**，因为数组没有 .type。
+    // List: same as single-pass rec — one element's extra feeds the next (preserves order).
+    // **Missing this branch blows up on "unrecognized production undefined"**, because arrays have no .type.
     if (Array.isArray(root)) {
       let c = ctx0;
       const out = [];
@@ -813,7 +830,7 @@ ${slotCases}
     const stack = [];
     let node = root;
     let value;
-    let mode = 0; // 0 = 有个节点要处理，1 = 有个结果要交给栈顶
+    let mode = 0; // 0 = have a node to process, 1 = have a result to deliver to top of stack
     lastNode = root;
 
     for (;;) {
@@ -822,11 +839,11 @@ ${slotCases}
         const fs = H[node.type] !== undefined ? NO_CHILDREN : FIELDS[node.type];
         if (fs === undefined) {
           throw new Error(
-            "[${spec.from.id}] 不认识的产生式 " + node.type +
-              "（__lang__=" + (node && node.__lang__) + "，" + whereOf(node) + "）",
+            "[${spec.from.id}] unrecognized production " + node.type +
+              " (__lang__=" + (node && node.__lang__) + ", " + whereOf(node) + ")",
           );
         }
-        // 帧的 ctx 从上（父帧或本次调用的入参）继承 —— 这就是线程
+        // Frame's ctx is inherited from above (parent frame or this call's input) — this is threading
         const fr = {
           node,
           fs,
@@ -868,8 +885,8 @@ ${slotCases}
     } catch (e) {
       if (e instanceof RangeError && /stack/i.test(String(e.message))) {
         const err = new Error(
-          "[${spec.from.id}] 输入嵌套太深：" + whereOf(lastNode) +
-            "。\\n  蹦床版的 identity 那条路不占原生栈，但 handler 里调 rec、子节点又有 handler 时会嵌套 —— 层数等于路径上带 handler 的节点数。",
+          "[${spec.from.id}] Input nested too deep: " + whereOf(lastNode) +
+            ".\\n  Trampoline version's identity path doesn't use native stack, but when handler calls rec and child also has handler, they nest — layers equal to number of nodes with handlers on the path.",
         );
         err.name = "StackOverflow";
         throw err;
