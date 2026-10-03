@@ -1,26 +1,26 @@
 /**
- * 语言声明。
+ * Language declaration.
  *
- * 一份声明同时是：节点的 TS 类型、以及 codegen 读的遍历元数据。
- * 没有第二份真相 —— 手写的 union 类型不再存在。
+ * A single declaration serves dual purpose: TS types for nodes, and traversal metadata for codegen.
+ * No second source of truth - hand-written union types no longer exist.
  */
 
-// ───────────────────────── 记法 ─────────────────────────
+// ───────────────────────── Notation ─────────────────────────
 
-/** 零或多个。嵌套一层就是 nanopass 的 field-levels。 */
+/** Zero or more. One level of nesting corresponds to nanopass field-levels. */
 export function list<const T extends string>(t: T): { readonly list: T } {
   return { list: t };
 }
 
-/** 可有可无。对应 nanopass 的 (maybe x)。 */
+/** Optional. Corresponds to nanopass (maybe x). */
 export function maybe<const T extends string>(t: T): { readonly maybe: T } {
   return { maybe: t };
 }
 
 /**
- * 宿主类型登记表。用声明合并扩展：
+ * Host type registry. Extend via declaration merging:
  *
- *   declare module "../src/lang.ts" {
+ *   declare module "../src/nanopass/lang.ts" {
  *     interface Hosts { symbol: symbol }
  *   }
  */
@@ -30,22 +30,23 @@ export interface Hosts {
   boolean: boolean;
 }
 
-// ───────────────────────── 声明的形状 ─────────────────────────
+// ───────────────────────── Shape of declarations ─────────────────────────
 
 export type FieldDesc = string | { readonly list: FieldDesc } | { readonly maybe: FieldDesc };
 
 export interface LangDecl {
-  /** 语言 id。会写进每个节点的 __lang__，也是报错时的语言名。 */
+  /** Language id. Written to each node's __lang__, and used in error messages. */
   readonly id: string;
   readonly entry: string;
   /**
-   * 非终结符 → 产生式(tag) → 字段名 → 字段描述。
+   * Nonterminal → production (tag) → field name → field description.
    *
-   * 这里故意只允许 Record，不再允许“产生式的值是个字符串”。那个形式（透明产生式：
-   * 这个产生式就是另一个非终结符）很诱人，但它让
-   *     Param: { name: "string" }        ← 把字段名当成了 tag
-   * 也能通过类型检查，而且 Param 的节点类型会静默变成 never。
-   * 要这个特性的时候再加，且得带子类型那套机制。
+   * Intentionally only allows Record, not "production value is a string".
+   * That form (transparent production: this production is just another nonterminal)
+   * is tempting, but it lets
+   *     Param: { name: "string" }        ← treating field name as tag
+   * pass type checking, and Param's node type silently becomes never.
+   * Add that feature later if needed, with proper subtyping mechanism.
    */
   readonly rules: Record<string, Record<string, Record<string, FieldDesc>>>;
 }
@@ -54,7 +55,7 @@ export function language<const D extends LangDecl>(d: D): D {
   return d;
 }
 
-// ───────────────────────── 类型的推导 ─────────────────────────
+// ───────────────────────── Type inference ─────────────────────────
 
 export type RulesOf<D> = D extends { rules: infer R } ? R : never;
 export type Nonterminals<D> = keyof RulesOf<D> & string;
@@ -63,10 +64,11 @@ export type ProdsOf<D, NT extends Nonterminals<D>> = RulesOf<D>[NT];
 type Host<T> = T extends keyof Hosts ? Hosts[T] : unknown;
 
 /**
- * 唯一的规则：字段值能对上 rules 的键 → 子节点；否则 → 宿主值。
+ * Single rule: field value matches rules key → child node; otherwise → host value.
  *
- * 这一条同时决定类型（这里）和遍历（codegen 的 isChild）。所以「哪些字段要递归」
- * 不可能和类型漂移 —— 那个「漏标 rec 就静默不递归」的毛病在结构上不存在。
+ * This determines both types (here) and traversal (codegen's isChild).
+ * So "which fields to recurse" cannot drift from types - the "forget to mark rec,
+ * silently don't recurse" bug structurally cannot happen.
  */
 type FieldType<D, F> = F extends string
   ? F extends Nonterminals<D>
@@ -79,37 +81,39 @@ type FieldType<D, F> = F extends string
       : never;
 
 /**
- * 框架字段。
+ * Framework fields.
  *
- * __lang__  由 codegen 填 —— 裸对象没有 RTTI，分不清“同一个 tag 属于哪门语言”。
- * __meta__  由前端填（行号、源文件名……），pass 负责把它带到输出节点，不然第一次重写就丢了。
+ * __lang__  Filled by codegen - plain objects have no RTTI, can't tell
+ *           "same tag, different language".
+ * __meta__  Filled by frontend (line numbers, source file...), passes carry it
+ *           to output nodes, else first rewrite loses it.
  *
- * 这两个不放进 NodeOf。试过直接拼到 ProdNode 上，结果是递归的映射类型里多一层交叉，
- * 立刻触发 TS2589 / “Two different types with this name exist”。所以只在边界（fixture、
- * 前端产物）用 WithMeta 套一下。
+ * Not in NodeOf. Tried adding directly to ProdNode, but recursive mapped types
+ * with extra intersection immediately trigger TS2589 / "Two different types with
+ * this name exist". So only use WithMeta wrapper at boundaries (fixtures, frontend output).
  */
 export interface NodeMeta {
   readonly __lang__?: string;
   readonly __meta__?: unknown;
 }
 
-/** 给一棵树（或一个节点）加框架字段。用在夹具和前端产物那一侧。 */
+/** Add framework fields to a tree (or node). Use on fixtures and frontend output side. */
 export type WithMeta<T> = T & NodeMeta;
 
 export type ProdNode<D, P extends string, F> = {
   readonly [Q in keyof F | "type"]: Q extends "type" ? P : Q extends keyof F ? FieldType<D, F[Q]> : never;
 };
 
-/** 某个非终结符的节点联合。 */
+/** Node union for a nonterminal. */
 export type NodeOf<D, K extends string> =
   K extends Nonterminals<D>
     ? { [P in keyof ProdsOf<D, K>]: ProdNode<D, P & string, ProdsOf<D, K>[P]> }[keyof ProdsOf<D, K>]
     : never;
 
-/** 入口非终结符的节点联合，省得每次写 NodeOf<typeof L, "Expr">。 */
+/** Node union for entry nonterminal, saves writing NodeOf<typeof L, "Expr"> each time. */
 export type Nodes<D> = NodeOf<D, D extends { entry: infer E extends string } ? E : never>;
 
-/** 某个产生式的某个字段是不是子节点。codegen 用这个决定要不要递归。 */
+/** Is a field of a production a child node? Codegen uses this to decide whether to recurse. */
 export function isChild(decl: LangDecl, tag: string, field: string): boolean {
   for (const prods of Object.values(decl.rules)) {
     const prod = prods[tag];
@@ -120,20 +124,21 @@ export function isChild(decl: LangDecl, tag: string, field: string): boolean {
   return false;
 }
 
-// ───────────────────────── 派生 ─────────────────────────
+// ───────────────────────── Derivation ─────────────────────────
 
-/** 非终结符 → 产生式 → 字段名 → 字段描述 */
+/** Nonterminal → production → field name → field description */
 type AddMap = Record<string, Record<string, Record<string, FieldDesc>>>;
 
-/** 从 X 里删掉 RM 列出的那些 tag。X 是透明产生式（字符串）时原样保留。 */
+/** Remove tags listed in RM from X. If X is transparent production (string), keep as-is. */
 type Strip<X, RM> = X extends Record<string, unknown> ? Omit<X, Extract<RM, keyof X>> : X;
 
 /**
- * 产生式表怎么合：先删（RM），再加（A **覆盖** B）。
+ * How production tables merge: delete first (RM), then add (A **overrides** B).
  *
- * 必须用 Omit + 交叉的「覆盖」语义，不能直接 `A & B` —— add 里重定义一个已有产生式
- * （比如给 Lam 添一个字段）是正当用法，而 `{body: "Expr"} & {body: "Body"}` 会塌成
- * `body: never`，整个产生式就没了。
+ * Must use Omit + intersection "override" semantics, not direct `A & B` -
+ * redefining an existing production in add (e.g. adding field to Lam) is valid use,
+ * but `{body: "Expr"} & {body: "Body"}` collapses to `body: never`, losing
+ * the whole production.
  */
 type MergeProds<B, A, RM extends readonly string[]> = Omit<Strip<B, RM[number]>, keyof A & string> & A;
 
@@ -146,13 +151,15 @@ export type MergeRules<BR, AR, RM extends readonly string[]> = {
 };
 
 /**
- * 从一个语言派生新语言。对应 nanopass 的 (extends L) 加 terminals/production 里的 +/-。
+ * Derive new language from existing one. Corresponds to nanopass (extends L)
+ * plus +/- in terminals/production.
  *
  *   const L1 = derive({ id: "L1", base: Lsrc, remove: ["IfAlt"] });
  *   const L2 = derive({ id: "L2", base: Lsrc, add: { Expr: { Lit: { num: "number" } } } });
  *
- * 类型层是真的合并：删掉的产生式会从 NodeOf 里消失，所以拿它去写 pass 会报错。
- * codegen 读的是这里摊平出来的 rules —— 派生只发生一次，下游看到的是完整语言。
+ * Type-level is true merge: removed productions disappear from NodeOf, so using
+ * it to write passes will error.
+ * Codegen reads flattened rules here - derivation happens once, downstream sees complete language.
  */
 export interface DeriveSpec<
   B extends LangDecl,
@@ -160,7 +167,7 @@ export interface DeriveSpec<
   A extends AddMap,
   RM extends readonly string[],
 > {
-  /** 新语言的 id。 */
+  /** New language id. */
   readonly id: I;
   readonly base: B;
   readonly add?: A;
