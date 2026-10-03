@@ -195,14 +195,7 @@ export function analysisPass(spec: {
  * Common pass categories (for organization and scheduling hints).
  */
 export type PassCategory =
-  | "simplification"
-  | "dce"
-  | "scalar"
-  | "loop"
-  | "inlining"
-  | "memory"
-  | "analysis"
-  | "verification";
+  "simplification" | "dce" | "scalar" | "loop" | "inlining" | "memory" | "analysis" | "verification";
 
 /**
  * Extended pass with category (for pass manager hints).
