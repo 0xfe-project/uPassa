@@ -536,270 +536,39 @@ export function emitWalker(spec: WalkerSpec): string {
   return checked(emitWalkerSrc(spec), `${spec.from.id}->${spec.to.id}`);
 }
 
-/** 生成一组 pass 的融合遍历器源码（递归版，快）。 */
-export function emitFusedGroupRec(specs: readonly WalkerSpec[]): string {
-  const label = specs.map((x) => x.from.id).join("→");
-  return checked(emitFusedGroupRecSrc(specs), `融合 ${label}`);
+/** 生成单个 pass 的遍历器源码（蹦床版：下树不占原生栈）。 */
+export function emitWalkerTramp(spec: WalkerSpec): string {
+  return checked(emitWalkerTrampSrc(spec), `蹦床 ${spec.from.id}->${spec.to.id}`);
 }
-
-/** 生成一组 pass 的融合遍历器源码（蹦床版，identity 不占原生栈）。 */
-export function emitFusedGroupTramp(specs: readonly WalkerSpec[]): string {
-  const label = specs.map((x) => x.from.id).join("→");
-  return checked(emitFusedGroupTrampSrc(specs), `蹦床 ${label}`);
-}
-
-// ───────────────────────── 管线融合（G6 第一块）─────────────────────────
 
 /**
- * 一组「同语言、arity 0」的 pass 融成一个遍历。
+ * 蹦床版遍历器：**显式帧栈 + dispatch 循环**，identity 那条路上一个 JS 栈帧都不占。
  *
- * ── 朴素的做法错在哪
+ * ── 为什么要有它
  *
- * 天真的写法是 `F_i(node) = F_{i+1}(P_i(node))`，其中 P_i 的 rec 绑到 F_i。问题是
- * **子节点会被处理两遍**：一次经由 rec（走 i..end），一次经由外层的 F_{i+1}
- * （它递归进父节点的结果，于是又走一遍子节点）。
+ * 递归版（`emitWalkerSrc`）每节点一个原生栈帧，深输入会爆栈。常态用递归版（快），
+ * **溢出时**才切到这个 —— 见 `e2e/runner.ts` 的逐 pass 兜底。
  *
- * ── 实际做法：deep + shallow
+ * ── 它跟"融合"没有关系
  *
- *   deep(node)   = 用第一门 pass 深做这个节点（子节点走 deep），
- *                  然后依次把第 2..k 门 pass **浅做**在这个结果上
- *   shallow_i(v) = 第 i 门 pass 在这个节点上的 hander/identity，**子节点原样用**
- *                  （它们已经被整组处理过了）
+ * 以前这段代码住在融合那一套里（"融合组的蹦床版"），单门 pass 用时走的也是同一段 ——
+ * 因为单门就是一个元素的组。融合砍掉之后它拆出来独立成函数：**它就是"同一门 pass，
+ * 换成迭代下树"**。跟融不融合无关，所以不该跟着融合一起走。
  *
- * 这样每个节点每门 pass 只走一次，而且中间结果不用物化成树。
+ * 代价：每节点多分配一个帧对象，实测比递归版慢 ~20%（t18 量过）。所以只当兜底。
  *
- * ── 和「一门一门跑」的语义差别（必须说清楚）
+ * ── 还会占原生栈的地方
  *
- * 跑法 A（不融合）：P1 全树 → P2 全树 → …，所以 P1 在父节点上看到的是**只被 P1
- * 处理过**的子节点。
- * 跑法 B（融合）：P1 在父节点上看到的是**被整组处理过**的子节点。
- *
- * 所以如果 P1 的 handler 会去**看子节点的 tag**，而 P2 会改那个 tag，两者就不等价。
- * 本组的两个 pass（normalizeBegin / normalizePrimArity）只看自己节点的字段和子节点
- * **个数**，不看子节点的 tag —— 所以安全。
- *
- * 这类判断需要分析「哪门 pass 会看子节点的 tag」，**现在没做**。所以融合的范围限制在
- * 「非终结符名字一致 + arity 0」，并且每一组都用「融合前后逐字节相同」当护栏
- * （见 e2e 的断言）。
- *
- * 顺带一条实测的观察：本管线里 12 门 pass 的 handler **没有一个会看子节点的 tag** ——
- * 它们只看自己节点的字段、子节点的**个数**、以及子节点的 type（那是分派，不是语义判断）。
- * 所以整条融合链跑出来逐字节相同。但这是**观察，不是证明**；护栏还得留着。
+ * handler 里的 `rec` 接到的是同一个蹦床（会开一层嵌套的 `drive`），所以子树遍历也是迭代的。
+ * 唯一还会占原生栈的是「handler 里调 rec、子节点又有 handler」这种**嵌套** —— 层数等于
+ * 路径上带 handler 的节点数。这条限制是真的，报错时说清楚（t18 / t27）。
  */
-/**
- * 融合的**递归**版：快，但深度受原生栈限制。
- *
- * 蹦床版（emitFusedGroupTramp）把 identity 那条路变成迭代，深度不受限，但每节点多分配
- * 一个帧对象 —— 实测慢 20% 左右。所以两个都留着，由调用方选。
- *
- *   快（递归）  1.38×    identity 链深度 ~13k
- *   深（蹦床）  0.79×    identity 链深度 200 万+
- *
- * 默认用快的那个：绝大多数输入不会深到爆栈，而 20% 是每一条输入都要付的。
- * 输入深度不可控的场景（用户写的源码、机器生成的代码）该选蹦床版。
- */
-function emitFusedGroupRecSrc(specs: readonly WalkerSpec[]): string {
-  if (specs.length === 0) throw new CodegenError("[fuse] 空格子");
-  const first = specs[0]!;
-  // 融合的连线是按**非终结符名字**走的，所以卡的是名字集合，不是语言 id。
-  const ntNames = (sp: WalkerSpec): string => Object.keys(sp.from.rules).sort().join(",");
-  for (const sp of specs) {
-    if (ntNames(sp) !== ntNames(first)) {
-      throw new CodegenError(
-        `[fuse] 组里的非终结符名字对不上：${sp.from.id} 是 ${ntNames(sp)}，${first.from.id} 是 ${ntNames(first)}`,
-      );
-    }
-    if (sp.arity !== 0) {
-      throw new CodegenError(
-        `[fuse] ${sp.from.id}: arity ${sp.arity} 的 pass 不能融合（带 extra 的会自己控制下降）`,
-      );
-    }
-    checkTagUniqueness(sp);
-  }
-  const lang = first.from.rules;
+function emitWalkerTrampSrc(spec: WalkerSpec): string {
+  checkTagUniqueness(spec);
 
+  const k = spec.arity;
+  const lang = spec.from.rules;
   const nts = Object.keys(lang);
-  const fns: string[] = [];
-
-  // ── 浅做：每门 pass 一个，按 tag 分派
-  for (let i = 1; i < specs.length; i++) {
-    const sp = specs[i]!;
-    for (const nt of nts) {
-      const prods = sp.from.rules[nt] ?? {};
-      const cases: string[] = [];
-      for (const tag of Object.keys(prods)) {
-        const hasHandler = sp.rules[nt]?.[tag] !== undefined;
-        // 浅做：identity 就是原样返回（子节点已经是终态），handler 才动
-        const body = hasHandler
-          ? `      out = finish(v, handlersList[${i}][${s(nt)}][${s(tag)}](v, idRec));`
-          : `      out = v;`;
-        cases.push(`    case ${s(tag)}: {\n${body}\n      break;\n    }`);
-      }
-      cases.push(
-        `    default:\n` +
-          `      throw new Error("[fuse] ${sp.from.id} 的非终结符 ${nt} 里没有产生式 " + v.type + "（" + whereOf(v) + "）");`,
-      );
-      fns.push(
-        `  function sh_${i}_${nt}(v) {\n    let out;\n    switch (v.type) {\n${cases.join("\n")}\n    }\n    return out;\n  }`,
-      );
-    }
-  }
-
-  // ── 深做：用第 0 门 pass，子节点走 deep；做完之后依次浅做
-  const shallowCalls = specs
-    .slice(1)
-    .map((_, idx) => `    v = sh_${idx + 1}_(v);`)
-    .join("\n");
-
-  for (const nt of nts) {
-    const prods = lang[nt]!;
-    const cases: string[] = [];
-    for (const [tag, inProd] of Object.entries(prods)) {
-      if (typeof inProd === "string") continue;
-      const hasHandler = first.rules[nt]?.[tag] !== undefined;
-      const body = hasHandler
-        ? `      v = finish(n, handlersList[0][${s(nt)}][${s(tag)}](n, deep));`
-        : emitDeepIdentity(first, nt, tag, inProd);
-      cases.push(`    case ${s(tag)}: {\n${body}\n      break;\n    }`);
-    }
-    cases.push(
-      `    default:\n` +
-        `      throw new Error("[fuse ${first.from.id}] 非终结符 ${nt} 里没有产生式 " + n.type + "（" + whereOf(n) + "）");`,
-    );
-    const shallow = specs.length > 1 ? shallowCalls.replace(/sh_(\d+)_\(/g, `sh_$1_${nt}(`) : "";
-    fns.push(
-      `  function deep_${nt}(n) {\n` +
-        `    let v;\n` +
-        `    const d = ++depth;\n` +
-        `    if (d > maxDepth) { maxDepth = d; deepest = n; }\n` +
-        `    switch (n.type) {\n${cases.join("\n")}\n    }\n` +
-        `    depth--;\n` +
-        (shallow ? `${shallow}\n` : ``) +
-        `    return v;\n  }`,
-    );
-  }
-
-  const byTag = Object.entries(first.from.rules)
-    .flatMap(([nt, prods]) => Object.keys(prods).map((tag) => `    ${s(tag)}: deep_${nt},`))
-    .join("\n");
-
-  return `// 由 codegen 生成（融合）。不要手改。改语言声明或 pass 的规则，然后重新生成。
-//   ${specs.map((x) => x.from.id).join(" → ")}   （${specs.length} 门融成 1 个遍历）
-function build(handlersList, init) {
-  const LANG = ${s(first.to.id)};
-  const idRec = (x) => x;
-  let depth = 0;
-  let maxDepth = 0;
-  let deepest = null;
-
-  function whereOf(node) {
-    const m = node && node.__meta__;
-    if (!m) return "（没有位置信息）";
-    return (m.file ?? "?") + ":" + (m.line ?? "?") + (m.col !== undefined ? ":" + m.col : "");
-  }
-
-  function guard(f) {
-    try { return f(); } catch (e) {
-      if (e instanceof RangeError && /stack/i.test(String(e.message))) {
-        const err = new Error("[fuse ${first.from.id}] 输入嵌套太深：" + whereOf(deepest) + "（走到 " + maxDepth + " 层就溢出了）。");
-        err.name = "StackOverflow";
-        throw err;
-      }
-      throw e;
-    }
-  }
-
-  function finish(from, to) {
-    if (to === null || typeof to !== "object" || Array.isArray(to)) return to;
-    const meta = from !== null && from !== undefined ? from.__meta__ : undefined;
-    if (to.__lang__ === undefined) to.__lang__ = LANG;
-    if (to.__meta__ === undefined && meta !== undefined) to.__meta__ = meta;
-    for (const k of Object.keys(to)) {
-      if (k === "__meta__" || k === "__lang__") continue;
-      stampFresh(to[k], meta);
-    }
-    return to;
-  }
-
-  function stampFresh(x, meta) {
-    if (x === null || typeof x !== "object") return;
-    if (Array.isArray(x)) { for (const y of x) stampFresh(y, meta); return; }
-    if (x.__lang__ !== undefined) return;
-    x.__lang__ = LANG;
-    if (x.__meta__ === undefined && meta !== undefined) x.__meta__ = meta;
-    for (const k of Object.keys(x)) {
-      if (k === "__meta__" || k === "__lang__") continue;
-      stampFresh(x[k], meta);
-    }
-  }
-
-  function deep(x) {
-    // 列表（list 字段 / rec 收到一串子节点）：逐个下树，顺序保持
-    if (Array.isArray(x)) return x.map(deep);
-    const w = DEEP[x.type];
-    if (w === undefined) {
-      throw new Error("[fuse ${first.from.id}] rec() 遇到不认识的产生式 " + x.type + "（" + whereOf(x) + "）");
-    }
-    return w(x);
-  }
-
-${fns.join("\n\n")}
-
-  const DEEP = {
-${byTag}
-  };
-
-  function run(x) {
-    depth = 0; maxDepth = 0; deepest = null;
-    return guard(() => deep(x));
-  }
-
-  return { run, arity: 0 };
-}
-`;
-}
-
-/** 深做时的 identity：子节点走 deep。 */
-function emitDeepIdentity(spec: WalkerSpec, nt: string, tag: string, inProd: Prod): string {
-  const props: string[] = [`type: ${s(tag)}`];
-  for (const [f, d] of Object.entries(inProd)) {
-    const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
-    if (sh.kind === "copy") props.push(`${s(f)}: n.${f}`);
-    else if (sh.kind === "node") props.push(`${s(f)}: deep_${sh.nt}(n.${f})`);
-    else if (sh.kind === "list") props.push(`${s(f)}: n.${f}.map(deep_${sh.nt})`);
-    else props.push(`${s(f)}: n.${f} === undefined ? undefined : deep_${sh.nt}(n.${f})`);
-  }
-  return `      v = finish(n, { ${props.join(", ")} });`;
-}
-
-function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
-  if (specs.length === 0) throw new CodegenError("[fuse] 空格子");
-  const first = specs[0]!;
-  // 融合的连线是按**非终结符名字**走的，所以卡的是名字集合，不是语言 id。
-  const ntNames = (sp: WalkerSpec): string => Object.keys(sp.from.rules).sort().join(",");
-  for (const sp of specs) {
-    if (ntNames(sp) !== ntNames(first)) {
-      throw new CodegenError(
-        `[fuse] 组里的非终结符名字对不上：${sp.from.id} 是 ${ntNames(sp)}，${first.from.id} 是 ${ntNames(first)}`,
-      );
-    }
-    if (sp.arity !== first.arity) {
-      throw new CodegenError(
-        `[fuse] 组里的 arity 不一致：${sp.from.id} 是 ${sp.arity}，${first.from.id} 是 ${first.arity}`,
-      );
-    }
-    if (specs.length > 1 && sp.arity !== 0) {
-      throw new CodegenError(
-        `[fuse] ${sp.from.id}: arity ${sp.arity} 的 pass 不能和多门融（浅做表达不了线程）`,
-      );
-    }
-    checkTagUniqueness(sp);
-  }
-
-  const lang = first.from.rules;
-  const nts = Object.keys(lang);
-
-  // ── 生成的表
 
   // tag → 非终结符（tag 在一个语言里唯一，这是 checkTagUniqueness 保证的）
   const tagNt: Record<string, string> = {};
@@ -813,7 +582,7 @@ function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
       if (typeof inProd === "string") continue;
       const fields: [string, string][] = [];
       for (const [f, d] of Object.entries(inProd)) {
-        const sh = shapeOf(first.from, d, `${nt}.${tag}.${f}`);
+        const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
         if (sh.kind === "node") fields.push([f, "n"]);
         else if (sh.kind === "list") fields.push([f, "l"]);
         else if (sh.kind === "maybe") fields.push([f, "m"]);
@@ -823,20 +592,19 @@ function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
   }
 
   // 帧里放结果的槽位个数 = 所有 tag 里子节点字段最多的那个。
-  // 用编号槽位而不是一个数组：省掉每节点一次数组分配（那是热路径）。
+  // 用编号槽位而不是一个数组：省掉每节点一次数组分配（热路径）。
   const maxSlots = Math.max(1, ...Object.values(tagFields).map((f) => f.length));
   const slotNames = Array.from({ length: maxSlots }, (_, i) => `r${i}`);
   const slotInit = slotNames.map((n) => `${n}: undefined`).join(", ");
   // 按 i 写槽位 —— 用 switch 而不是 fr["r" + i]：动态键会退化成字典查找
   const slotCases = slotNames.map((n, i) => `      case ${i}: fr.${n} = v; return;`).join("\n");
 
-  // identity 的构造：把收集到的子节点结果 rs 装进字面量。
-  // 每个 tag 一个 case —— 这里**没有递归**，子节点在 rs 里躺着。
-  // 单门、且同语言 → 允许"子节点一个都没变就返回原节点"。
+  // 同语言 → 允许"子节点一个都没变就返回原节点"。
   // 和 emitWalkerSrc 的 identity 路径同一个理由：不动点判定要能一次 `===` 判定（t13），
-  // 顺带省掉没动过的子树的重分配。多门融的时候不行 —— 那是链式的，节点归属于不同阶段。
-  const canReuse = specs.length === 1 && first.from.id === specs[0]!.to.id;
+  // 顺带省掉没动过的子树的重分配。
+  const canReuse = spec.from.id === spec.to.id;
 
+  // identity 的构造：把收集到的子节点结果装进字面量。**这里没有递归** —— 子节点在槽里躺着。
   const buildCases: string[] = [];
   for (const nt of nts) {
     for (const [tag, inProd] of Object.entries(lang[nt]!)) {
@@ -845,7 +613,7 @@ function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
       const checks: string[] = [];
       let ri = 0;
       for (const [f, d] of Object.entries(inProd)) {
-        const sh = shapeOf(first.from, d, `${nt}.${tag}.${f}`);
+        const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
         if (sh.kind === "copy") props.push(`${s(f)}: n.${f}`);
         else {
           if (canReuse) {
@@ -860,30 +628,28 @@ function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
         }
       }
       const obj = `{ ${props.join(", ")} }`;
-      // 同上：叶子永远"没变"，直接返回 n（不然引用永远不等）
+      // 叶子永远"没变"，直接返回 n（不然引用永远不等）
       const built = !canReuse ? obj : checks.length === 0 ? "n" : `(${checks.join(" || ")}) ? ${obj} : n`;
       buildCases.push(`    case ${s(tag)}:\n      return ${built};`);
     }
   }
 
-  return `// 由 codegen 生成（融合 + 蹦床）。不要手改。改语言声明或 pass 的规则，然后重新生成。
-//   ${specs.map((x) => x.from.id).join(" → ")} → ${specs[specs.length - 1]!.to.id}   （${specs.length} 门融成 1 个遍历）
+  return `// 由 codegen 生成（蹦床版）。不要手改。改语言声明或 pass 的规则，然后重新生成。
+//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   （extra ${k} 个值，线程）` : ""}   （下树不占原生栈）
 //
-// 这里是**显式帧栈 + dispatch 循环**，不是递归下树：identity 那条路上一个 JS 栈帧都不占。
+// 显式帧栈 + dispatch 循环：identity 那条路上一个 JS 栈帧都不占。
 // handler 里的 rec 也接到同一个蹦床上（会开一层嵌套的 drive），所以子树遍历也是迭代的。
 // 唯一还会占原生栈的是「handler 里调 rec、子节点又有 handler」这种嵌套 —— 层数等于
-// 路径上带 handler 的节点数（见 t18 的注释）。
-function build(handlersList, init) {
-  // 一个组的结果属于**最后一门** pass 的输出语言 —— 不是第一门的
-  const LANG = ${s(specs[specs.length - 1]!.to.id)};
+// 路径上带 handler 的节点数。
+function build(handlers, init) {
+  const LANG = ${s(spec.to.id)};
   /** 列表逐元素比引用 —— "没改就复用"用。 */
   function sameList(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
     return true;
   }
-  const K = ${first.arity};
-  const idRec = (x) => x;
+  const K = ${k};
 
   const TAG_NT = {
 ${Object.entries(tagNt)
@@ -898,20 +664,13 @@ ${Object.entries(tagFields)
   .join("\n")}
   };
 
-  // 每个 pass 一张 tag → handler 的平表。省掉每次按非终结符再查一层。
-  const HANDLERS = [];
-  for (let i = 0; i < handlersList.length; i++) {
-    const flat = Object.create(null);
-    for (const tag in TAG_NT) {
-      const nt = TAG_NT[tag];
-      const per = handlersList[i][nt];
-      const h = per === undefined ? undefined : per[tag];
-      if (h !== undefined) flat[tag] = h;
-    }
-    HANDLERS.push(flat);
+  // tag → handler 的**平表**。省掉每次按非终结符再查一层。
+  const H = Object.create(null);
+  for (const tag in TAG_NT) {
+    const per = handlers[TAG_NT[tag]];
+    const h = per === undefined ? undefined : per[tag];
+    if (h !== undefined) H[tag] = h;
   }
-  const H0 = HANDLERS[0];
-  const SHALLOW = HANDLERS.slice(1);
 
   // __lang__ / __meta__ 的补丁处。
   //
@@ -946,16 +705,15 @@ ${Object.entries(tagFields)
     switch (tag) {
 ${buildCases.join("\n")}
     default:
-      throw new Error("[fuse ${first.from.id}] 没有产生式 " + tag + " 的构造子");
+      throw new Error("[${spec.from.id}] 没有产生式 " + tag + " 的构造子");
     }
   }
 
   // ── 蹦床 ──
   //
-  // 帧的形状（只有一个对象类型，字段固定，所以隐藏类是稳定的）：
-  //   { node, fs, rs, i, li, lacc }
+  // 帧的形状（只有一个对象类型、字段固定，所以隐藏类是稳定的）：
+  //   { node, fs, i, li, lacc, ctx, r0..rn }
   //   fs   这个 tag 的子节点字段表
-  //   rs   每个子节点字段收到的结果（按 fs 的顺序）
   //   i    正在处理第几个字段
   //   li   列表字段走到第几个元素；lacc 是攒到一半的数组（null = 还没开始）
 
@@ -982,16 +740,16 @@ ${buildCases.join("\n")}
     }
   }
 
-  /** 收下一个子节点的结果。K > 0 时 value 是 [节点, ...extra]，extra 串给下一个兄弟。 */
   /** 按槽位号写结果。用 switch 而不是动态键：动态键会退化成字典查找。 */
   function setSlot(fr, i, v) {
     switch (i) {
 ${slotCases}
       default:
-        throw new Error("[fuse ${first.from.id}] 槽位越界 " + i);
+        throw new Error("[${spec.from.id}] 槽位越界 " + i);
     }
   }
 
+  /** 收下一个子节点的结果。K > 0 时 value 是 [节点, ...extra]，extra 串给下一个兄弟。 */
   function accept(fr, value) {
     if (K > 0) fr.ctx = value.slice(1);
     const node0 = K > 0 ? value[0] : value;
@@ -1000,10 +758,10 @@ ${slotCases}
     fr.i += 1;
   }
 
-  /** 这一帧收尾：先跑第一门 pass（handler 或 identity），再依次浅做后面几门。 */
+  /** 这一帧收尾：跑 handler（或者 identity），把槽里的子节点装回一个节点。 */
   function buildOne(fr) {
     const tag = fr.node.type;
-    const h = H0[tag];
+    const h = H[tag];
     let v;
     if (h !== undefined) {
       // handler 是黑的（叶子）：它的 rec 拿到的是**这个蹦床**，所以子树还是迭代的。
@@ -1018,10 +776,6 @@ ${slotCases}
       }
     } else {
       v = finish(fr.node, buildIdentity(tag, fr.node, fr));
-    }
-    for (let i = 0; i < SHALLOW.length; i++) {
-      const s = SHALLOW[i][tag];
-      if (s !== undefined) v = finish(fr.node, s(v, idRec));
     }
     return K > 0 ? [v, ...fr.ctx] : v;
   }
@@ -1065,10 +819,10 @@ ${slotCases}
     for (;;) {
       if (mode === 0) {
         lastNode = node;
-        const fs = H0[node.type] !== undefined ? NO_CHILDREN : FIELDS[node.type];
+        const fs = H[node.type] !== undefined ? NO_CHILDREN : FIELDS[node.type];
         if (fs === undefined) {
           throw new Error(
-            "[fuse ${first.from.id}] 不认识的产生式 " + node.type +
+            "[${spec.from.id}] 不认识的产生式 " + node.type +
               "（__lang__=" + (node && node.__lang__) + "，" + whereOf(node) + "）",
           );
         }
@@ -1114,8 +868,8 @@ ${slotCases}
     } catch (e) {
       if (e instanceof RangeError && /stack/i.test(String(e.message))) {
         const err = new Error(
-          "[fuse ${first.from.id}] 输入嵌套太深：" + whereOf(lastNode) +
-            "。\\n  融合遍历器的 identity 那条路不占原生栈，但 handler 里调 rec、子节点又有 handler 时会嵌套 —— 层数等于路径上带 handler 的节点数（t18 / t27）。",
+          "[${spec.from.id}] 输入嵌套太深：" + whereOf(lastNode) +
+            "。\\n  蹦床版的 identity 那条路不占原生栈，但 handler 里调 rec、子节点又有 handler 时会嵌套 —— 层数等于路径上带 handler 的节点数。",
         );
         err.name = "StackOverflow";
         throw err;

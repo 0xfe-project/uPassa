@@ -35,8 +35,8 @@
  * 附带的好处：不需要记忆化，也不需要"往下传 bound 再往上带 seen"那两个槽。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { L6 } from "../langs/L6.lang.ts";
 import { L7 } from "../langs/L7.lang.ts";
 

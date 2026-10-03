@@ -29,8 +29,8 @@
  * - 删掉一个绑定，它的值里的引用也就不算了。因为整个值被丢掉，这是对的（Lcore 无副作用）。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { L7 } from "../langs/L7.lang.ts";
 
 type OutExpr = NodeOf<typeof L7, "Expr">;

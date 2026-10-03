@@ -4,8 +4,8 @@
  * nanopass 手册里那个例子。这条之后 Lcore 就没有一臂 if 了。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L5 } from "../langs/L5.lang.ts";
 import { L6 } from "../langs/L6.lang.ts";
 

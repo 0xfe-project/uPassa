@@ -20,8 +20,8 @@
  * 注意 Int / Float 要分清楚 —— 折叠不能把整数变成浮点，反过来也不行。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L6 } from "../langs/L6.lang.ts";
 
 type InExpr = NodeOf<typeof L6, "Expr">;

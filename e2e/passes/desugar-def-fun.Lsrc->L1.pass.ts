@@ -9,8 +9,8 @@
  *       [(define (,f ,x* ...) ,body) `(define ,f (lambda (,x* ...) ,body))]))
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { Lsrc } from "../langs/Lsrc.lang.ts";
 import { L1 } from "../langs/L1.lang.ts";
 

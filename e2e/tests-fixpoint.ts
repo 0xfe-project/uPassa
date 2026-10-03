@@ -8,7 +8,7 @@
  *   ④ 判定"变没变"的那一步不是全量深比较 —— 用一条反例证明它只认引用
  */
 
-import { buildWalkerDynamic, emitWalker } from "../src/codegen.ts";
+import { buildWalkerDynamic, emitWalker } from "../src/nanopass/codegen.ts";
 import { fixpoint, FixpointLimit } from "./fixpoint.ts";
 import { L6 } from "./langs/L6.lang.ts";
 import { L7 } from "./langs/L7.lang.ts";

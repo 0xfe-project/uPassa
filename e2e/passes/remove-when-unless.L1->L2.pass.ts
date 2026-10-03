@@ -5,8 +5,8 @@
  * 两条规则，其余由框架重建。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L1 } from "../langs/L1.lang.ts";
 import { L2 } from "../langs/L2.lang.ts";
 

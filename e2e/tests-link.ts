@@ -31,7 +31,7 @@ export interface LinkCase {
 
 const LANG_A = `export const A = language({ id: "A", entry: "E", rules: {} });`;
 const LANG_B = `export const B = language({ id: "B", entry: "E", rules: {} });`;
-const PASS_A = `import { pass } from "../../src/pass.ts";
+const PASS_A = `import { pass } from "../../src/nanopass/pass.ts";
 import { A } from "../langs/A.lang.ts";
 export const foo = pass({ from: A, to: A, rules: {} });`;
 

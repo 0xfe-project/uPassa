@@ -39,7 +39,7 @@
  * 这跟"跳转是引用"是同一个手法，也一样需要校验（别指向不存在的 unit）。
  */
 
-import { language, list } from "../../src/lang.ts";
+import { language, list } from "../../src/nanopass/lang.ts";
 
 export const Lcfg = language({
   id: "Lcfg",

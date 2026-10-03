@@ -8,10 +8,10 @@
  * 而 rec 带 extra 进来、把元组吐出去，正好是能看到线程的地方。
  */
 
-import { derive, language, list, maybe, type NodeOf } from "../src/lang.ts";
-import { CodegenError } from "../src/codegen.ts";
-import { pass, sig } from "../src/pass.ts";
-import { buildWalker } from "../src/codegen.ts";
+import { derive, language, list, maybe, type NodeOf } from "../src/nanopass/lang.ts";
+import { CodegenError } from "../src/nanopass/codegen.ts";
+import { pass, sig } from "../src/nanopass/pass.ts";
+import { buildWalker } from "../src/nanopass/codegen.ts";
 
 export type Check = (name: string, ok: boolean, detail?: string) => void;
 

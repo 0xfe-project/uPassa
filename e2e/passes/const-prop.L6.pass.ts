@@ -29,8 +29,8 @@
  * 顺带：这是一条 **from === to** 的 pass（语言不变），优化层里这是主模式。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { L6 } from "../langs/L6.lang.ts";
 
 type Expr = NodeOf<typeof L6, "Expr">;

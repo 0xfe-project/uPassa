@@ -9,8 +9,8 @@
  * 语言没变，所以这里不需要新的 .lang.ts。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L6 } from "../langs/L6.lang.ts";
 
 type OutExpr = NodeOf<typeof L6, "Expr">;

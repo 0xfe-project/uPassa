@@ -30,9 +30,9 @@
  * 之后又能触发交换律）留给 t13 的驱动器。
  */
 
-import type { NodeOf } from "../src/lang.ts";
-import type { LangDecl } from "../src/lang.ts";
-import { buildWalkerDynamic, type WalkerSpec } from "../src/codegen.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
+import type { LangDecl } from "../src/nanopass/lang.ts";
+import { buildWalkerDynamic, type WalkerSpec } from "../src/nanopass/codegen.ts";
 import type { Step } from "./runner.ts";
 
 // ───────────────────────── 模式 ─────────────────────────

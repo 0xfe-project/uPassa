@@ -44,8 +44,8 @@
  * 其余节点交给生成的 identity 路径（它已经会"子节点都没变就返回原节点"）。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { evalPrimConst } from "../eval.ts";
 import { step } from "../runner.ts";
 import { fixpoint } from "../fixpoint.ts";

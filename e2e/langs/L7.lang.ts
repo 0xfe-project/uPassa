@@ -8,7 +8,7 @@
  * 这是 derive 的 **add** 路径第一次被真的用到 —— 前面六门语言全是删。
  */
 
-import { derive } from "../../src/lang.ts";
+import { derive } from "../../src/nanopass/lang.ts";
 import { L6 } from "./L6.lang.ts";
 
 export const L7 = derive({

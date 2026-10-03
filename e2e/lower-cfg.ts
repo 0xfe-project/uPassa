@@ -41,7 +41,7 @@
  * （t17 的活跃性就要做这个）。这一层的目的是**控制流**。
  */
 
-import type { NodeOf } from "../src/lang.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
 import type { Step } from "./runner.ts";
 import { L7 } from "./langs/L7.lang.ts";
 import { Lcfg } from "./langs/Lcfg.lang.ts";

@@ -17,15 +17,7 @@ import { PIPELINE_STEPS } from "./pipeline.ts";
 import { runPipelinePrefix } from "./linked.ts";
 import { cleanCfg, liveness } from "./cfg-passes.ts";
 import type { CfgProg } from "./cfg.ts";
-import {
-  compileGroups,
-  compileGroupsWithFallback,
-  fuseGroups,
-  runFused,
-  runSteps,
-  type FusedStep,
-  type Step,
-} from "./runner.ts";
+import { compileStepsWithFallback, runSafe, runSteps, type Step } from "./runner.ts";
 
 // **从管线取**，不在这里手抄一份 —— 手抄的会漏掉新加的 pass（漏过一次）。
 const STEPS: readonly Step[] = PIPELINE_STEPS;
@@ -420,45 +412,36 @@ checkDepth("嵌套深度 10→40（同规模）", 2000, 10, 40);
  */
 const KNOWN_SUPERLINEAR = new Map<string, string>([]);
 
-// ───────── 融合 vs 不融合 ─────────
+// ───────── 兜底 vs 参考（融合已砍，t38）─────────
+//
+// 融合曾经在这里占一整节（递归 / 蹦床 / 兜底三条对照）。砍掉之后要盯的就剩一条：
+// **生产形态（逐 pass 兜底）比"老老实实逐 pass 跑"慢不慢** —— 也就是那层 try/catch 的代价。
+//
+// 理论上应该是 0：`try` 包在 `run` 最外层，V8 不因为它的存在就放弃优化（实测过）。
 
 {
-  const groups = fuseGroups(STEPS);
-  const fused = compileGroups(groups);
-  const fusedDeep = compileGroups(groups, { trampoline: true });
-  // **生产形态**：逐组兜底。这一行是盯着"包一层 try/catch 会不会拖慢常态"的。
-  const fusedSafe = compileGroupsWithFallback(groups).fused;
-  const runWith = (steps: readonly Step[], n: number): number => {
-    const ast = readProgram(parse(flat(n), "perf.tli").forms, "perf.tli");
+  const safe = compileStepsWithFallback(STEPS);
+  const mk = (n: number): unknown => readProgram(parse(flat(n), "perf.tli").forms, "perf.tli");
+  const runWith = (n: number, f: (ast: unknown) => unknown): number => {
+    const ast = mk(n);
     const t0 = process.hrtime.bigint();
-    runSteps(ast, steps);
+    f(ast);
     return Number(process.hrtime.bigint() - t0) / 1e6;
   };
-  const runFusedWith = (n: number, which: readonly FusedStep[]): number => {
-    const ast = readProgram(parse(flat(n), "perf.tli").forms, "perf.tli");
-    const t0 = process.hrtime.bigint();
-    runFused(ast, which);
-    return Number(process.hrtime.bigint() - t0) / 1e6;
-  };
-  runWith(STEPS, 1000); // 预热
+  const ref = (ast: unknown): unknown => runSteps(ast, STEPS);
+  const prod = (ast: unknown): unknown => runSafe(ast, safe);
+
+  runWith(1000, ref); // 预热
   let a = Infinity;
-  let b = Infinity;
-  let c = Infinity;
   let d = Infinity;
   for (let i = 0; i < REPS; i++) {
-    a = Math.min(a, runWith(STEPS, 1000));
-    b = Math.min(b, runFusedWith(1000, fused));
-    c = Math.min(c, runFusedWith(1000, fusedDeep));
-    d = Math.min(d, runFusedWith(1000, fusedSafe));
+    a = Math.min(a, runWith(1000, ref));
+    d = Math.min(d, runWith(1000, prod));
   }
-  console.log(`\n融合：${STEPS.length} 门 pass → ${groups.length} 组`);
-  console.log(`  n=1000  不融合 ${a.toFixed(1)} ms`);
-  console.log(`          融合（递归版，快）  ${b.toFixed(1)} ms   ${(a / b).toFixed(2)}×`);
+  console.log(`\n管线：${STEPS.length} 门 pass（逐 pass 跑；融合已砍）`);
+  console.log(`  n=1000  逐 pass 参考      ${a.toFixed(1)} ms`);
   console.log(
-    `          融合（蹦床版，深）  ${c.toFixed(1)} ms   ${(a / c).toFixed(2)}×  （identity 链不限深，代价是每节点一个帧对象）`,
-  );
-  console.log(
-    `          融合（兜底版，生产）${d.toFixed(1)} ms   ${(a / d).toFixed(2)}×  （默认走递归；某组溢出才换蹦床重跑那一组）`,
+    `          逐 pass 兜底（生产）${d.toFixed(1)} ms   ${(a / d).toFixed(2)}×  （默认走递归遍历器；某门溢出才换蹦床重跑那一门）`,
   );
 }
 

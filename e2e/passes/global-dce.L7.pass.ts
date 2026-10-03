@@ -34,8 +34,8 @@
  */
 
 import { L7 } from "../langs/L7.lang.ts";
-import { pass } from "../../src/pass.ts";
-import type { NodeOf } from "../../src/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
 import { step } from "../runner.ts";
 
 type Program = NodeOf<typeof L7, "Program">;

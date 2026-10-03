@@ -7,7 +7,7 @@
  * 一个 pass 负责消掉，删的顺序不会互相牵扯。
  */
 
-import { language, list, maybe } from "../../src/lang.ts";
+import { language, list, maybe } from "../../src/nanopass/lang.ts";
 
 export const Lsrc = language({
   id: "Lsrc",

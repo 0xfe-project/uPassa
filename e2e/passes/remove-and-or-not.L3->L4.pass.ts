@@ -19,8 +19,8 @@
  * G1 的线程模型用在一门 from-to 的 pass 上。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { L3 } from "../langs/L3.lang.ts";
 import { L4 } from "../langs/L4.lang.ts";
 

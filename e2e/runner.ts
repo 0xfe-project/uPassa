@@ -8,14 +8,9 @@
  * （代价是每节点一次函数调用。那是 t18 要消的东西。）
  */
 
-import {
-  buildWalkerDynamic,
-  emitFusedGroupRec,
-  emitFusedGroupTramp,
-  type WalkerSpec,
-} from "../src/codegen.ts";
-import type { LangDecl } from "../src/lang.ts";
-import type { Pass } from "../src/pass.ts";
+import { buildWalkerDynamic, emitWalkerTramp, type WalkerSpec } from "../src/nanopass/codegen.ts";
+import type { LangDecl } from "../src/nanopass/lang.ts";
+import type { Pass } from "../src/nanopass/pass.ts";
 
 /**
  * 一步。
@@ -138,86 +133,8 @@ export function runSteps(input: unknown, steps: readonly Step[]): Stage[] {
   return stages;
 }
 
-// ───────────────────────── 融合（G6）─────────────────────────
+// ───────────────────────── 逐 pass 兜底 ─────────────────────────
 
-/**
- * 把一串 pass 切成能融合的组。
- *
- * 能融的条件：**连续、非终结符名字一致、arity 0**。
- * 带 extra 的 pass 会自己控制下降，浅做没法表达，所以是硬栅栏。
- */
-export function fuseGroups(steps: readonly Step[]): Step[][] {
-  const ntNames = (x: Step): string => Object.keys(x.spec.from.rules).sort().join(",");
-  const compatible = (a: Step, b: Step): boolean =>
-    a.to === b.from &&
-    ntNames(a) === ntNames(b) &&
-    a.arity === 0 &&
-    b.arity === 0 &&
-    // 手搭的 Step 不能融 —— 融出来的 walker 是从 spec 重建的，会丢掉它 run 里的逻辑
-    a.opaque !== true &&
-    b.opaque !== true;
-
-  const groups: Step[][] = [];
-  for (const st of steps) {
-    const cur = groups[groups.length - 1];
-    if (cur && compatible(cur[cur.length - 1]!, st)) cur.push(st);
-    else groups.push([st]);
-  }
-  return groups;
-}
-
-/** 一个融合组的可跑形态。 */
-export interface FusedStep {
-  readonly name: string;
-  /** 这一组里有几门 pass。1 就是没融成。 */
-  readonly width: number;
-  readonly run: (input: unknown) => unknown;
-  readonly source: string;
-}
-
-export function compileGroups(groups: readonly Step[][], opts?: { trampoline?: boolean }): FusedStep[] {
-  return groups.map((g) => {
-    // 单元素组也走蹦床：不然 arity > 0 的 pass 还是递归下树的，深度限制没消掉。
-    // 一个 pass 一个组的时候 K > 0 是允许的（多门融的时候才要求 arity 0）。
-    const specs = g.map((x) => x.spec);
-    // 默认用递归版（快）；要深输入就开弹床版。两条路的输出逐字节相同（e2e 对两条都比）。
-    //
-    // 单元素组：递归版就是原来的单 pass 生成器（emitWalker，支持 arity）。
-    // 多门融的组：arity 必须是 0，两条路都支持。
-    const one = g[0]!;
-    if (specs.length === 1 && opts?.trampoline !== true) {
-      // 单元素组 + 非蹦床：直接用 step() 里已经建好的那个递归 walker。
-      return { name: one.name, width: 1, run: one.run, source: one.source };
-    }
-    if (specs.length === 1 && one.opaque === true && one.rebuild === undefined) {
-      // 手搭的 Step 又没给 rebuild：只能用它自己的 run（递归下树，深输入会溢出）。
-      // 这不是"静默做错"，是"明确地退回已知的旧限制"。
-      return { name: one.name, width: 1, run: one.run, source: one.source };
-    }
-    const src = opts?.trampoline === true ? emitFusedGroupTramp(specs) : emitFusedGroupRec(specs);
-    const build = new Function(`${src}\nreturn build;`)() as (
-      handlersList: unknown[],
-      init: () => unknown[],
-    ) => { run: (n: unknown) => unknown };
-    const handlersList = g.map((x) => (x.spec as { rules: unknown }).rules);
-    // 单 pass 组要用那个 pass 自己的 init（arity > 0 时 extra 的初值）。
-    // 写死成 () => [] 会让 ctx 空的，handler 里拿到的环境就是 undefined。
-    const init = (g[0]!.spec as { init?: () => unknown[] }).init ?? (() => []);
-    const mk = (spec: unknown): { run: (n: unknown) => unknown } =>
-      build([(spec as { rules: unknown }).rules], init);
-    return {
-      name: g.map((x) => x.name).join("+"),
-      width: g.length,
-      run:
-        one.rebuild !== undefined
-          ? one.rebuild(mk)
-          : (input: unknown) => build(handlersList, init).run(input),
-      source: src,
-    };
-  });
-}
-
-/** 跑融合后的链。 */
 /**
  * 这是不是"递归遍历器撞到原生栈上限"？
  *
@@ -229,19 +146,24 @@ export function isStackOverflow(e: unknown): boolean {
   return e instanceof RangeError || (e instanceof Error && e.name === "StackOverflow");
 }
 
+export interface SafeStep {
+  readonly name: string;
+  readonly run: (input: unknown) => unknown;
+}
+
 export interface SafePipeline {
-  /** 逐组跑（`runFused` 直接用这个）。 */
-  readonly fused: FusedStep[];
-  /** 目前为止兜底在本进程里触发过哪些组（按名字，重复的也算）。 */
+  /** 逐 pass 跑（`runSafe` 直接用这个）。 */
+  readonly steps: readonly SafeStep[];
+  /** 目前为止兜底在本进程里触发过哪些 pass（按名字，重复的也算）。 */
   readonly fallbacks: readonly string[];
   resetFallbacks(): void;
 }
 
 /**
- * **逐组兜底**：默认走递归（快），某一组溢出就只把那一组换成蹦床版重跑。
+ * **逐 pass 兜底**：默认走递归遍历器（快），哪一门溢出了就**只把那一门**换成蹦床版重跑。
  *
- * 为什么是逐组而不是整条管线重跑：融合之后一条管线是十几组，深输入通常只有一组是深的
- * （比如一条长 Call 链会一路穿过 identity 那几组）。整条重跑等于把那十几组白跑一遍。
+ * 为什么是逐 pass 而不是整条管线重跑：深输入通常只有几门是深的（一条长 Call 链会一路
+ * 穿过所有认领它的 pass）。整条重跑等于把前面十几门白跑一遍。
  *
  * 为什么重跑是安全的：
  *   - `run` 每次都重置 handler 的状态（计数器、环境……），所以重跑不带上一半的状态；
@@ -250,33 +172,53 @@ export interface SafePipeline {
  *
  * 兜底**只做一次**：蹦床版也溢出（handler 嵌套太深那种，蹦床也占原生栈）就把它的报错
  * 原样抛出去 —— 那条限制是真的，不能假装兜住了。
+ *
+ * ── 蹦床版是**惰性**建的
+ *
+ * 常态路径一次都不该碰它 —— `emitWalkerTramp` 出来的源码要 `new Function` 编一遍。
+ * 没溢出就不编。
  */
-export function compileGroupsWithFallback(groups: readonly Step[][]): SafePipeline {
+export function compileStepsWithFallback(steps: readonly Step[]): SafePipeline {
   const fallbacks: string[] = [];
 
-  const fused = groups.map((g) => {
-    // 递归版（快）和蹦床版（深）都是同一次融合的产物，只是下树方式不同
-    const fast = compileGroups([g])[0]!;
-    const slow = compileGroups([g], { trampoline: true })[0]!;
+  /** 把一份 spec 编成蹦床版遍历器。 */
+  const mkTramp = (spec: unknown): { run: (n: unknown) => unknown } => {
+    const src = emitWalkerTramp(spec as WalkerSpec);
+    const build = new Function(`${src}\nreturn build;`)() as (
+      handlers: unknown,
+      init: () => unknown[],
+    ) => { run: (n: unknown) => unknown };
+    const sp = spec as { rules: unknown; init?: () => unknown[] };
+    return build(sp.rules, sp.init ?? (() => []));
+  };
+
+  const out = steps.map((st) => {
+    // 手搭的 Step（rewrite / fixpoint）给了 `rebuild` 的话，让它自己把"循环 + 蹦床遍历器"
+    // 拼起来；没给就只能退回它自己的 `run`（递归下树，深输入会溢出 —— 那不是静默做错，
+    // 是明确地退回已知的旧限制）。
+    let slow: ((input: unknown) => unknown) | undefined;
+    const getSlow = (): ((input: unknown) => unknown) => {
+      slow ??=
+        st.rebuild !== undefined ? st.rebuild(mkTramp) : (input: unknown) => mkTramp(st.spec).run(input);
+      return slow;
+    };
+
     return {
-      name: fast.name,
-      width: fast.width,
-      // 落盘用递归版的源码（那是常态跑的那份）
-      source: fast.source,
+      name: st.name,
       run: (input: unknown): unknown => {
         try {
-          return fast.run(input);
+          return st.run(input);
         } catch (e) {
           if (!isStackOverflow(e)) throw e;
-          fallbacks.push(fast.name);
-          return slow.run(input);
+          fallbacks.push(st.name);
+          return getSlow()(input);
         }
       },
     };
   });
 
   return {
-    fused,
+    steps: out,
     fallbacks,
     resetFallbacks: () => {
       fallbacks.length = 0;
@@ -284,8 +226,9 @@ export function compileGroupsWithFallback(groups: readonly Step[][]): SafePipeli
   };
 }
 
-export function runFused(input: unknown, fused: readonly FusedStep[]): unknown {
+/** 依次跑过去。 */
+export function runSafe(input: unknown, safe: SafePipeline): unknown {
   let cur = input;
-  for (const f of fused) cur = f.run(cur);
+  for (const s of safe.steps) cur = s.run(cur);
   return cur;
 }

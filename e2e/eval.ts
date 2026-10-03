@@ -8,7 +8,7 @@
  * 类型细化那期（Lnum → Lrepr）会把这门语言换掉，那时这里才需要分 int/float。
  */
 
-import type { NodeOf } from "../src/lang.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
 import type { L7 } from "./langs/L7.lang.ts";
 
 type Expr = NodeOf<typeof L7, "Expr">;

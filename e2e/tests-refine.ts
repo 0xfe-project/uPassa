@@ -10,7 +10,7 @@
  * 外加一条这条 pass 的**实际效果**：提升会改写字面量的种类。
  */
 
-import { buildWalker } from "../src/codegen.ts";
+import { buildWalker } from "../src/nanopass/codegen.ts";
 import { parse } from "./s-expr.ts";
 import { readProgram } from "./read.ts";
 import { Lnum } from "./langs/Lnum.lang.ts";

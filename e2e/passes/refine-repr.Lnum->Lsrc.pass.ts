@@ -26,8 +26,8 @@
  * 每层 `new Map(env)` 是 O(k²) —— t26 还过的那个债。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass, sig } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass, sig } from "../../src/nanopass/pass.ts";
 import { looksFloat } from "../s-expr.ts";
 import { Lnum } from "../langs/Lnum.lang.ts";
 import { Lsrc } from "../langs/Lsrc.lang.ts";

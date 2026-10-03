@@ -21,8 +21,8 @@
 
 import { L6 } from "./langs/L6.lang.ts";
 import { L7 } from "./langs/L7.lang.ts";
-import { pass, sig } from "../src/pass.ts";
-import type { NodeOf } from "../src/lang.ts";
+import { pass, sig } from "../src/nanopass/pass.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
 
 type Expr = NodeOf<typeof L6, "Expr">;
 type Program = NodeOf<typeof L6, "Program">;

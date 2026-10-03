@@ -44,15 +44,7 @@ import { dataflowChecks } from "./tests-dataflow.ts";
 import { cfgPassChecks } from "./tests-cfg-passes.ts";
 import { g1Checks } from "./tests-g1.ts";
 import { readProgram } from "./read.ts";
-import {
-  compileGroups,
-  compileGroupsWithFallback,
-  fuseGroups,
-  runFused,
-  runSteps,
-  step,
-  type Step,
-} from "./runner.ts";
+import { compileStepsWithFallback, runSafe, runSteps, step, type Step } from "./runner.ts";
 import { parse, SyntaxError_, unparse } from "./s-expr.ts";
 import { color } from "./ansi.ts";
 
@@ -974,43 +966,31 @@ for (const b of RUNTIME_BAD) {
   check("折叠：整棵树上没有漏折的字面量 Prim", leftoverFolds === 0, `还剩 ${leftoverFolds} 个`);
 }
 
-// ───────────────────────── 融合（G6 第一块）─────────────────────────
+// ───────────────────────── 逐 pass 兜底（t31 / t38）─────────────────────────
+//
+// 融合砍掉了（t38）：16 门只融成 2 组、收益 1.10×，却占了 codegen 一半的行数。
+// 留下的是**逐 pass 兜底** —— 它跟融合无关，是"递归遍历器深输入会爆栈"的解法：
+// 常态走递归（快），哪一步溢出就**只把那一步**换成蹦床版重跑。
 
-const GROUPS = fuseGroups(STEPS);
-/** 默认：递归版（快）。 */
-const FUSED = compileGroups(GROUPS);
-/** 蹦床版：identity 那条路不占原生栈，但每节点多一个帧对象（慢 ~20%）。 */
-const FUSED_DEEP = compileGroups(GROUPS, { trampoline: true });
-/**
- * **生产形态**：逐组兜底 —— 默认走递归（快），某一组溢出就只把那一组换成蹦床版重跑。
- * 深输入跑得过、常态性能不退，而且 pass 一行不改。
- */
-const SAFE = compileGroupsWithFallback(GROUPS);
-const FUSED_SAFE = SAFE.fused;
+const SAFE = compileStepsWithFallback(STEPS);
 
-/** 同一份源码，融合跑和不融合跑，结果必须逐字节相同。 */
-function fusedEqualsUnfused(src: string, label: string): void {
+/** 同一份源码，兜底版跑和"老老实实逐 pass 跑"结果必须逐字节相同。 */
+function safeEqualsReference(src: string, label: string): void {
   const ast1 = readProgram(parse(src, "fuse.tli").forms, "fuse.tli");
   const ast2 = readProgram(parse(src, "fuse.tli").forms, "fuse.tli");
   const a = JSON.stringify(LINKED.runStages(ast1).at(-1)!.ast);
-  for (const [kind, fused] of [
-    ["递归版", FUSED],
-    ["蹦床版", FUSED_DEEP],
-    ["兜底版", FUSED_SAFE],
-  ] as const) {
-    const b = JSON.stringify(runFused(ast2, fused));
-    let where = "";
-    if (a !== b) {
-      let i = 0;
-      while (i < a.length && a[i] === b[i]) i++;
-      where = `第 ${i} 字节：不融合 ${a.slice(i, i + 50)} / ${kind} ${b.slice(i, i + 50)}`;
-    }
-    check(`逐字节相同（${kind}）：${label}`, a === b, where);
+  const b = JSON.stringify(runSafe(ast2, SAFE));
+  let where = "";
+  if (a !== b) {
+    let i = 0;
+    while (i < a.length && a[i] === b[i]) i++;
+    where = `第 ${i} 字节：参考 ${a.slice(i, i + 50)} / 兜底 ${b.slice(i, i + 50)}`;
   }
+  check(`逐字节相同（兜底版 vs 逐 pass）：${label}`, a === b, where);
 }
 
-fusedEqualsUnfused(SOURCE, "demo 程序");
-for (const pr of PROGRAMS) fusedEqualsUnfused(pr.src, pr.name);
+safeEqualsReference(SOURCE, "demo 程序");
+for (const pr of PROGRAMS) safeEqualsReference(pr.src, pr.name);
 
 // ───────────────────────── 链接产物（t33）─────────────────────────
 //
@@ -1031,9 +1011,9 @@ for (const pr of PROGRAMS) fusedEqualsUnfused(pr.src, pr.name);
     const inProc = JSON.stringify(runSteps(mk(), STEPS).at(-1)!.ast);
     const linked = JSON.stringify(LINKED.runStages(mk()).at(-1)!.ast);
     if (inProc !== linked) mismatch = `${label}：逐层不一致`;
-    const inProcFused = JSON.stringify(runFused(mk(), FUSED));
-    const linkedFused = JSON.stringify(LINKED.run(mk()));
-    if (inProcFused !== linkedFused) mismatch = `${label}：融合不一致`;
+    const inProcSafe = JSON.stringify(runSafe(mk(), SAFE));
+    const linkedSafe = JSON.stringify(LINKED.run(mk()));
+    if (inProcSafe !== linkedSafe) mismatch = `${label}：兜底版与产物不一致`;
     if (mismatch !== "") break;
   }
   check(`链接产物与在进程里跑逐字节一致（${srcs.length} 个程序）`, mismatch === "", mismatch);
@@ -1122,9 +1102,7 @@ for (const pr of PROGRAMS) fusedEqualsUnfused(pr.src, pr.name);
   }
 }
 
-check(`融合把 pass 数压下来了（${STEPS.length} → ${GROUPS.length} 组）`, GROUPS.length < STEPS.length);
-
-// ───────────────────────── 蹦床：identity 那条路不再占原生栈（t18）─────────────────────────
+// ───────────────────────── 蹦床：identity 那条路不再占原生栈（t18 / t31 / t38）─────────────────────────
 
 {
   /** 深链。kind = "call"（没有 pass 认领 → 纯 identity）。 */
@@ -1146,28 +1124,18 @@ check(`融合把 pass 数压下来了（${STEPS.length} → ${GROUPS.length} 组
     return { type: "Prog", defs: [], body: [node] };
   };
 
-  // ① 融合（蹦床）跑得过很深的 identity 链
-  let ok = true;
-  let detail = "";
-  try {
-    runFused(deepCall(100000), FUSED_DEEP);
-  } catch (e) {
-    ok = false;
-    detail = (e as Error).message.slice(0, 80);
-  }
-  check("深 100000 的 Call 链：蹦床跑得过（identity 不占原生栈）", ok, detail);
-
-  // ①b **默认路径**（逐组兜底）也跑得过 —— 这才是生产形态：用户不需要知道有蹦床这回事
+  // ① **默认路径**（逐 pass 兜底）跑得过很深的 identity 链 —— 这才是生产形态：
+  //    用户不需要知道有蹦床这回事
   SAFE.resetFallbacks();
   let safeOk = true;
   let safeDetail = "";
   try {
-    runFused(deepCall(100000), FUSED_SAFE);
+    runSafe(deepCall(100000), SAFE);
   } catch (e) {
     safeOk = false;
     safeDetail = (e as Error).message.slice(0, 70);
   }
-  check("深 100000 的 Call 链：**默认路径**（逐组兜底）也跑得过", safeOk, safeDetail);
+  check("深 100000 的 Call 链：**默认路径**（逐 pass 兜底）也跑得过", safeOk, safeDetail);
 
   // ④ 兜底**真的触发了**，而且可观察（不然上面那条可能只是"碰巧没溢出"）
   check(
@@ -1176,8 +1144,8 @@ check(`融合把 pass 数压下来了（${STEPS.length} → ${GROUPS.length} 组
     `触发 ${SAFE.fallbacks.length} 次：${SAFE.fallbacks.join(" | ")}`,
   );
 
-  // ④b 是**逐组**重跑：同一个组最多重跑一次。
-  //     要是写成了"整条管线重来"，溢出的那几个组会被重跑很多次 —— 这条能区分两者。
+  // ④b 是**逐 pass**重跑：同一门最多重跑一次。
+  //     要是写成了"整条管线重来"，溢出的那几门会被重跑很多次 —— 这条能区分两者。
   {
     const seen = new Set<string>();
     let twice = "";
@@ -1186,15 +1154,15 @@ check(`融合把 pass 数压下来了（${STEPS.length} → ${GROUPS.length} 组
       seen.add(name);
     }
     check(
-      "④ 只重跑了溢出的那一组（每个组最多一次，不是整条管线重来）",
+      "④ 只重跑了溢出的那一门（每门最多一次，不是整条管线重来）",
       twice === "",
-      twice === "" ? `${seen.size}/${GROUPS.length} 组触发` : `${twice} 被重跑了两次`,
+      twice === "" ? `${seen.size}/${STEPS.length} 门触发` : `${twice} 被重跑了两次`,
     );
   }
 
   // ④c 对照：浅输入**不该**触发兜底（不然就是"永远走慢的那条"）
   SAFE.resetFallbacks();
-  runFused(readProgram(parse("(+ 1 2)", "shallow.tli").forms, "shallow.tli"), FUSED_SAFE);
+  runSafe(readProgram(parse("(+ 1 2)", "shallow.tli").forms, "shallow.tli"), SAFE);
   check("④ 对照：浅输入不触发兜底", SAFE.fallbacks.length === 0, SAFE.fallbacks.join(","));
 
   // ② 同一棵树走不融合的递归遍历器 —— 差两个数量级，这就是蹦床买到的
@@ -1226,7 +1194,7 @@ check(`融合把 pass 数压下来了（${STEPS.length} → ${GROUPS.length} 组
   };
   let letMsg = "";
   try {
-    runFused(deepLet(500000), FUSED_DEEP);
+    runSafe(deepLet(500000), SAFE);
   } catch (e) {
     letMsg = (e as Error).message;
   }
@@ -1434,12 +1402,6 @@ const summary =
     : `${color.green(`${results.length - failed} 通过`)} / ${color.red(`${failed} 失败`)}`;
 console.log(`\n${summary}`);
 
-{
-  const wide = GROUPS.filter((g) => g.length > 1);
-  console.log(
-    `${color.dim("融合")} ${STEPS.length} 门 pass → ${GROUPS.length} 组` +
-      `（${STEPS.length - GROUPS.length} 次：${wide.map((g) => color.cyan(`${g.length}门`)).join(" ")}）`,
-  );
-}
+console.log(`${color.dim("管线")} ${STEPS.length} 门 pass，逐 pass 跑（融合已砍，见 t38）`);
 
 if (failed > 0) process.exitCode = 1;

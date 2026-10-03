@@ -12,7 +12,7 @@
  * "第 2 行的这个形式"，不是说"某个节点"。
  */
 
-import type { NodeOf } from "../src/lang.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
 import { Lnum } from "./langs/Lnum.lang.ts";
 import {
   describe,

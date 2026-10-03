@@ -31,7 +31,7 @@
  * 塌成同一个 number。所以这里笼统的范围**正好**是宿主表示丢失信息的那些。
  */
 
-import { derive } from "../../src/lang.ts";
+import { derive } from "../../src/nanopass/lang.ts";
 import { Lsrc } from "./Lsrc.lang.ts";
 
 export const Lnum = derive({

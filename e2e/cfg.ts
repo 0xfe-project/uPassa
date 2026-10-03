@@ -27,7 +27,7 @@
  * 代价是 O(块数 + 跳转数)，一次建图跑一遍。
  */
 
-import type { NodeOf } from "../src/lang.ts";
+import type { NodeOf } from "../src/nanopass/lang.ts";
 import { Lcfg } from "./langs/Lcfg.lang.ts";
 import { UNTERMINATED } from "./lower-cfg.ts";
 

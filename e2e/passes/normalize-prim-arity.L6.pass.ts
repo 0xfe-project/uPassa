@@ -14,8 +14,8 @@
  * 中间变量或 and，而 and 这时已经没了。所以这两条留成 n 元，是有意的，不是漏了。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L6 } from "../langs/L6.lang.ts";
 
 type OutExpr = NodeOf<typeof L6, "Expr">;

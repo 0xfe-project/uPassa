@@ -8,8 +8,8 @@
  * 注意 rec 是在构造过程中被调的（每个绑定一次、体一次），不是在返回的字面量里。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L4 } from "../langs/L4.lang.ts";
 import { L5 } from "../langs/L5.lang.ts";
 

@@ -7,8 +7,8 @@
  * 所以 rec 是在循环里被调的，而不是在返回的字面量里。框架不管这个，只看结果。
  */
 
-import type { NodeOf } from "../../src/lang.ts";
-import { pass } from "../../src/pass.ts";
+import type { NodeOf } from "../../src/nanopass/lang.ts";
+import { pass } from "../../src/nanopass/pass.ts";
 import { L2 } from "../langs/L2.lang.ts";
 import { L3 } from "../langs/L3.lang.ts";
 
