@@ -35,9 +35,9 @@ import type { LoopInfo } from "./analysis/loops.ts";
  * Available analyses that passes can depend on
  */
 export interface SSAAnalyses {
-  domtree?: DomTree;
-  usedef?: UseDefChains;
-  loops?: LoopInfo;
+  domtree?: DomTree | undefined;
+  usedef?: UseDefChains | undefined;
+  loops?: LoopInfo | undefined;
 }
 
 /**
