@@ -57,8 +57,10 @@ export interface PassResult {
 
 /**
  * SSA pass definition
+ *
+ * Generic over T: works on any IR extension.
  */
-export interface SSAPass {
+export interface SSAPass<T = never> {
   /** Unique pass name */
   readonly name: string;
 
@@ -72,23 +74,23 @@ export interface SSAPass {
   readonly preservesAll?: boolean;
 
   /** Run the pass */
-  readonly run: (func: SSAFunction, analyses: SSAAnalyses) => PassResult;
+  readonly run: (func: SSAFunction<T>, analyses: SSAAnalyses) => PassResult;
 
   /** Optional: check if this pass should run (e.g., skip if no opportunities) */
-  readonly shouldRun?: ((func: SSAFunction, analyses: SSAAnalyses) => boolean) | undefined;
+  readonly shouldRun?: ((func: SSAFunction<T>, analyses: SSAAnalyses) => boolean) | undefined;
 }
 
 /**
  * Create an SSA pass.
  */
-export function ssaPass(spec: {
+export function ssaPass<T = never>(spec: {
   readonly name: string;
   readonly requires?: readonly AnalysisType[] | undefined;
   readonly invalidates?: readonly AnalysisType[] | undefined;
   readonly preservesAll?: boolean | undefined;
-  readonly run: (func: SSAFunction, analyses: SSAAnalyses) => PassResult;
-  readonly shouldRun?: ((func: SSAFunction, analyses: SSAAnalyses) => boolean) | undefined;
-}): SSAPass {
+  readonly run: (func: SSAFunction<T>, analyses: SSAAnalyses) => PassResult;
+  readonly shouldRun?: ((func: SSAFunction<T>, analyses: SSAAnalyses) => boolean) | undefined;
+}): SSAPass<T> {
   return {
     name: spec.name,
     requires: spec.requires ?? [],
@@ -103,18 +105,18 @@ export function ssaPass(spec: {
  * Function pass: runs on each function independently.
  * The default and most common type of SSA pass.
  */
-export type FunctionPass = SSAPass;
+export type FunctionPass<T = never> = SSAPass<T>;
 
 /**
  * Module pass: runs on entire module (all functions).
  * Used for interprocedural optimizations.
  */
-export interface ModulePass {
+export interface ModulePass<T = never> {
   readonly name: string;
   readonly requires: readonly AnalysisType[];
   readonly invalidates: readonly AnalysisType[];
   readonly run: (
-    functions: Map<string, SSAFunction>,
+    functions: Map<string, SSAFunction<T>>,
     analyses: Map<string, SSAAnalyses>,
   ) => { changed: boolean };
 }
@@ -122,15 +124,15 @@ export interface ModulePass {
 /**
  * Create a module pass.
  */
-export function modulePass(spec: {
+export function modulePass<T = never>(spec: {
   readonly name: string;
   readonly requires?: readonly AnalysisType[] | undefined;
   readonly invalidates?: readonly AnalysisType[] | undefined;
   readonly run: (
-    functions: Map<string, SSAFunction>,
+    functions: Map<string, SSAFunction<T>>,
     analyses: Map<string, SSAAnalyses>,
   ) => { changed: boolean };
-}): ModulePass {
+}): ModulePass<T> {
   return {
     name: spec.name,
     requires: spec.requires ?? [],
@@ -142,24 +144,24 @@ export function modulePass(spec: {
 /**
  * Pass pipeline: sequence of passes with dependency resolution.
  */
-export interface PassPipeline {
-  readonly passes: readonly (FunctionPass | ModulePass)[];
+export interface PassPipeline<T = never> {
+  readonly passes: readonly (FunctionPass<T> | ModulePass<T>)[];
 
   /** Run all passes on a function */
-  readonly runOnFunction: (func: SSAFunction) => void;
+  readonly runOnFunction: (func: SSAFunction<T>) => void;
 
   /** Run all passes on a module */
-  readonly runOnModule: (functions: Map<string, SSAFunction>) => void;
+  readonly runOnModule: (functions: Map<string, SSAFunction<T>>) => void;
 }
 
 /**
  * Utility: create a simple transform pass (common pattern).
  */
-export function transformPass(spec: {
+export function transformPass<T = never>(spec: {
   readonly name: string;
   readonly requires?: readonly AnalysisType[] | undefined;
-  readonly transform: (func: SSAFunction, analyses: SSAAnalyses) => boolean;
-}): SSAPass {
+  readonly transform: (func: SSAFunction<T>, analyses: SSAAnalyses) => boolean;
+}): SSAPass<T> {
   return ssaPass({
     name: spec.name,
     requires: spec.requires,
@@ -174,11 +176,11 @@ export function transformPass(spec: {
 /**
  * Utility: create an analysis pass (computes but doesn't modify).
  */
-export function analysisPass(spec: {
+export function analysisPass<T = never>(spec: {
   readonly name: string;
   readonly requires?: readonly AnalysisType[] | undefined;
-  readonly analyze: (func: SSAFunction, analyses: SSAAnalyses) => void;
-}): SSAPass {
+  readonly analyze: (func: SSAFunction<T>, analyses: SSAAnalyses) => void;
+}): SSAPass<T> {
   return ssaPass({
     name: spec.name,
     requires: spec.requires,
@@ -200,17 +202,17 @@ export type PassCategory =
 /**
  * Extended pass with category (for pass manager hints).
  */
-export interface CategorizedPass extends SSAPass {
+export interface CategorizedPass<T = never> extends SSAPass<T> {
   readonly category: PassCategory;
 }
 
 /**
  * Create a categorized pass.
  */
-export function categorizedPass(
+export function categorizedPass<T = never>(
   category: PassCategory,
-  spec: Parameters<typeof ssaPass>[0],
-): CategorizedPass {
+  spec: Parameters<typeof ssaPass<T>>[0],
+): CategorizedPass<T> {
   return {
     ...ssaPass(spec),
     category,

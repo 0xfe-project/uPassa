@@ -99,7 +99,8 @@ export interface SSAModule<T = never> {
  */
 export function getSuccessors<T>(term: Terminator<T>): BlockId[] {
   if (typeof term === "object" && term !== null && "target" in term) return [term.target];
-  if (typeof term === "object" && term !== null && "ifTrue" in term && "ifFalse" in term) return [term.ifTrue, term.ifFalse];
+  if (typeof term === "object" && term !== null && "ifTrue" in term && "ifFalse" in term)
+    return [term.ifTrue, term.ifFalse];
   return [];
 }
 

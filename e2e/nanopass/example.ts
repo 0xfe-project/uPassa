@@ -1,6 +1,6 @@
 /**
  * Example: Demonstrate the nanopass transformation chain
- * 
+ *
  * L0 (let) → L1 (lambda) → L2 (explicit refs) → L3 (flattened)
  */
 

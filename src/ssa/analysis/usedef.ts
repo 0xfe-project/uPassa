@@ -5,7 +5,17 @@
  * Generic over T: only analyzes minimal IR nodes; user nodes are opaque.
  */
 
-import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId, PhiNode, BranchNode, RetNode } from "../ir.ts";
+import type {
+  SSAFunction,
+  BasicBlock,
+  Instruction,
+  Terminator,
+  ValueId,
+  BlockId,
+  PhiNode,
+  BranchNode,
+  RetNode,
+} from "../ir.ts";
 
 /**
  * Use site: instruction/terminator that uses a value

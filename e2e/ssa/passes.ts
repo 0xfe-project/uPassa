@@ -1,6 +1,6 @@
 /**
  * SSA optimization passes for testing
- * 
+ *
  * These passes demonstrate the SSA pass infrastructure.
  * They are NOT production-quality optimizations - just examples.
  */
@@ -12,7 +12,7 @@ import type { SSAAnalyses } from "../../src/ssa/pass.js";
 /**
  * Example instruction type for testing
  */
-export type TestInstr = 
+export type TestInstr =
   | { type: "const"; dest: string; value: number }
   | { type: "add"; dest: string; left: string; right: string }
   | { type: "mul"; dest: string; left: string; right: string }
@@ -22,7 +22,7 @@ export type TestInstr =
 
 /**
  * Dead Code Elimination (DCE)
- * 
+ *
  * Remove instructions whose results are never used.
  * This is a simple local DCE - doesn't handle control flow.
  */
@@ -32,12 +32,12 @@ export const dcePass = transformPass({
   transform(func: SSAFunction<TestInstr>, analyses: SSAAnalyses): boolean {
     const usedef = analyses.usedef;
     if (!usedef) return false;
-    
+
     let changed = false;
-    
+
     for (const [_, block] of func.blocks) {
       const newInstrs: Instruction<TestInstr>[] = [];
-      
+
       for (const instr of block.instructions) {
         // Keep phi nodes if they have uses
         if (instr.type === "phi") {
@@ -49,13 +49,13 @@ export const dcePass = transformPass({
           }
           continue;
         }
-        
+
         // Keep instructions without dest (side effects)
         if (!("dest" in instr)) {
           newInstrs.push(instr);
           continue;
         }
-        
+
         // Keep instructions with uses
         const uses = usedef.getUses(instr.dest);
         if (uses.length > 0) {
@@ -64,17 +64,17 @@ export const dcePass = transformPass({
           changed = true;
         }
       }
-      
+
       block.instructions = newInstrs;
     }
-    
+
     return changed;
-  }
+  },
 });
 
 /**
  * Sparse Conditional Constant Propagation (SCCP)
- * 
+ *
  * Propagate constants through the CFG using SSA form.
  * Simplified version - only handles integer constants.
  */
@@ -84,7 +84,7 @@ export const sccpPass = transformPass({
     // Map variable name -> constant value (if known)
     const constants = new Map<string, number>();
     let changed = false;
-    
+
     // Collect constants
     for (const [_, block] of func.blocks) {
       for (const instr of block.instructions) {
@@ -93,22 +93,22 @@ export const sccpPass = transformPass({
         }
       }
     }
-    
+
     // Propagate and fold
     for (const [_, block] of func.blocks) {
       const newInstrs: Instruction<TestInstr>[] = [];
-      
+
       for (const instr of block.instructions) {
         if (instr.type === "phi") {
           newInstrs.push(instr);
           continue;
         }
-        
+
         // Try to fold add
         if (instr.type === "add") {
           const leftVal = constants.get(instr.left);
           const rightVal = constants.get(instr.right);
-          
+
           if (leftVal !== undefined && rightVal !== undefined) {
             const result = leftVal + rightVal;
             constants.set(instr.dest, result);
@@ -117,12 +117,12 @@ export const sccpPass = transformPass({
             continue;
           }
         }
-        
+
         // Try to fold mul
         if (instr.type === "mul") {
           const leftVal = constants.get(instr.left);
           const rightVal = constants.get(instr.right);
-          
+
           if (leftVal !== undefined && rightVal !== undefined) {
             const result = leftVal * rightVal;
             constants.set(instr.dest, result);
@@ -131,7 +131,7 @@ export const sccpPass = transformPass({
             continue;
           }
         }
-        
+
         // Replace mov with constant
         if (instr.type === "mov") {
           const srcVal = constants.get(instr.src);
@@ -142,20 +142,20 @@ export const sccpPass = transformPass({
             continue;
           }
         }
-        
+
         newInstrs.push(instr);
       }
-      
+
       block.instructions = newInstrs;
     }
-    
+
     return changed;
-  }
+  },
 });
 
 /**
  * SimplifyCFG
- * 
+ *
  * Simplify control flow graph:
  * - Remove unreachable blocks
  * - Merge blocks with single predecessor and single successor
@@ -166,21 +166,21 @@ export const simplifyCFGPass = transformPass({
     // Find reachable blocks
     const reachable = new Set<string>();
     const queue = [func.entry];
-    
+
     while (queue.length > 0) {
       const label = queue.shift()!;
       if (reachable.has(label)) continue;
       reachable.add(label);
-      
+
       const block = func.blocks.get(label);
       if (!block) continue;
-      
+
       // Add successors to queue
       for (const succ of block.successors) {
         queue.push(succ);
       }
     }
-    
+
     // Remove unreachable blocks
     let changed = false;
     for (const [label, _] of func.blocks) {
@@ -189,14 +189,14 @@ export const simplifyCFGPass = transformPass({
         changed = true;
       }
     }
-    
+
     return changed;
-  }
+  },
 });
 
 /**
  * Mem2Reg (simplified stub)
- * 
+ *
  * Promote memory operations to registers using SSA.
  * This is a stub - real mem2reg would analyze alloca/load/store.
  */
@@ -209,15 +209,15 @@ export const mem2regPass = transformPass({
     // 2. Check if they can be promoted (no address taken, simple uses)
     // 3. Replace load/store with SSA values and phi nodes
     // 4. Use the Braun algorithm to insert phis
-    
+
     // For now, just return unchanged
     return false;
-  }
+  },
 });
 
 /**
  * Copy Propagation
- * 
+ *
  * Replace uses of copied values with the original.
  * x = mov y  -->  replace all uses of x with y
  */
@@ -227,10 +227,10 @@ export const copyPropPass = transformPass({
   transform(func: SSAFunction<TestInstr>, analyses: SSAAnalyses): boolean {
     const usedef = analyses.usedef;
     if (!usedef) return false;
-    
+
     // Find mov instructions
     const copies = new Map<string, string>();
-    
+
     for (const [_, block] of func.blocks) {
       for (const instr of block.instructions) {
         if (instr.type === "mov") {
@@ -238,11 +238,11 @@ export const copyPropPass = transformPass({
         }
       }
     }
-    
+
     if (copies.size === 0) return false;
-    
+
     let changed = false;
-    
+
     // Replace uses in instructions
     for (const [_, block] of func.blocks) {
       for (const instr of block.instructions) {
@@ -280,7 +280,7 @@ export const copyPropPass = transformPass({
           }
         }
       }
-      
+
       // Replace uses in terminator
       if (block.terminator.type === "branch") {
         const replacement = copies.get(block.terminator.cond);
@@ -296,7 +296,7 @@ export const copyPropPass = transformPass({
         }
       }
     }
-    
+
     return changed;
-  }
+  },
 });

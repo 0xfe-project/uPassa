@@ -11,7 +11,18 @@
  * Should be run after each SSA pass to catch bugs early.
  */
 
-import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId, JumpNode, BranchNode, RetNode, UnreachableNode } from "./ir.ts";
+import type {
+  SSAFunction,
+  BasicBlock,
+  Instruction,
+  Terminator,
+  ValueId,
+  BlockId,
+  JumpNode,
+  BranchNode,
+  RetNode,
+  UnreachableNode,
+} from "./ir.ts";
 import type { DomTree } from "./analysis/domtree.ts";
 import { buildDomTree, dominates } from "./analysis/domtree.ts";
 import { isPhi } from "./ir.ts";

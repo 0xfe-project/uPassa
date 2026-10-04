@@ -82,7 +82,12 @@ function walkEntryFirst<T>(func: SSAFunction<T>, visitor: BlockVisitor<T>, visit
 /**
  * Walk blocks in DFS order.
  */
-function walkDFS<T>(func: SSAFunction<T>, blockId: BlockId, visitor: BlockVisitor<T>, visited: Set<BlockId>): void {
+function walkDFS<T>(
+  func: SSAFunction<T>,
+  blockId: BlockId,
+  visitor: BlockVisitor<T>,
+  visited: Set<BlockId>,
+): void {
   if (visited.has(blockId)) return;
   visited.add(blockId);
 

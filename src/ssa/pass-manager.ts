@@ -20,6 +20,7 @@ import type { SSAPass, ModulePass, SSAAnalyses, AnalysisType, PassResult } from 
 import { buildDomTree, type DomTree } from "./analysis/domtree.ts";
 import { buildUseDefChains, type UseDefChains } from "./analysis/usedef.ts";
 import { detectLoops, type LoopInfo } from "./analysis/loops.ts";
+import { verifySSA } from "./verify.ts";
 
 /**
  * Pass manager configuration
@@ -81,7 +82,7 @@ class AnalysisCache {
 /**
  * SSA pass manager: orchestrates pass execution
  */
-export class PassManager {
+export class PassManager<T = never> {
   private readonly config: Required<PassManagerConfig>;
   private readonly stats: PassStats[] = [];
 
@@ -97,7 +98,7 @@ export class PassManager {
   /**
    * Run a sequence of passes on a function until fixed point.
    */
-  runOnFunction(func: SSAFunction, passes: readonly SSAPass[]): void {
+  runOnFunction(func: SSAFunction<T>, passes: readonly SSAPass<T>[]): void {
     const cache = new AnalysisCache();
     let iteration = 0;
     let anyChanged = true;
@@ -163,10 +164,10 @@ export class PassManager {
   /**
    * Run a sequence of passes on all functions in a module.
    */
-  runOnModule(functions: Map<string, SSAFunction>, passes: readonly (SSAPass | ModulePass)[]): void {
+  runOnModule(functions: Map<string, SSAFunction<T>>, passes: readonly (SSAPass<T> | ModulePass<T>)[]): void {
     // Separate function passes and module passes
-    const functionPasses = passes.filter((p): p is SSAPass => !("run" in p && p.run.length === 2));
-    const modulePasses = passes.filter((p): p is ModulePass => !functionPasses.includes(p as any));
+    const functionPasses = passes.filter((p): p is SSAPass<T> => !("run" in p && p.run.length === 2));
+    const modulePasses = passes.filter((p): p is ModulePass<T> => !functionPasses.includes(p as any));
 
     // Run function passes on each function
     for (const [funcId, func] of functions) {
@@ -216,7 +217,7 @@ export class PassManager {
    * Compute required analyses, using cache when available.
    */
   private computeAnalyses(
-    func: SSAFunction,
+    func: SSAFunction<T>,
     required: readonly AnalysisType[],
     cache: AnalysisCache,
   ): SSAAnalyses {
@@ -297,9 +298,7 @@ export class PassManager {
   /**
    * Verify function after a pass (for debugging).
    */
-  private verifyFunction(func: SSAFunction, passName: string): void {
-    // Import verify lazily to avoid circular dependencies
-    const { verifySSA } = require("./verify.ts");
+  private verifyFunction(func: SSAFunction<T>, passName: string): void {
     try {
       verifySSA(func);
     } catch (err) {
@@ -311,33 +310,37 @@ export class PassManager {
 /**
  * Convenience: create a pass manager and run passes.
  */
-export function runPasses(func: SSAFunction, passes: readonly SSAPass[], config?: PassManagerConfig): void {
-  const manager = new PassManager(config);
+export function runPasses<T = never>(
+  func: SSAFunction<T>,
+  passes: readonly SSAPass<T>[],
+  config?: PassManagerConfig,
+): void {
+  const manager = new PassManager<T>(config);
   manager.runOnFunction(func, passes);
 }
 
 /**
  * Convenience: run passes on a module.
  */
-export function runModulePasses(
-  functions: Map<string, SSAFunction>,
-  passes: readonly (SSAPass | ModulePass)[],
+export function runModulePasses<T = never>(
+  functions: Map<string, SSAFunction<T>>,
+  passes: readonly (SSAPass<T> | ModulePass<T>)[],
   config?: PassManagerConfig,
 ): void {
-  const manager = new PassManager(config);
+  const manager = new PassManager<T>(config);
   manager.runOnModule(functions, passes);
 }
 
 /**
  * Pass pipeline builder: fluent API for constructing pipelines.
  */
-export class PassPipelineBuilder {
-  private passes: (SSAPass | ModulePass)[] = [];
+export class PassPipelineBuilder<T = never> {
+  private passes: (SSAPass<T> | ModulePass<T>)[] = [];
 
   /**
    * Add a function pass.
    */
-  add(pass: SSAPass): this {
+  add(pass: SSAPass<T>): this {
     this.passes.push(pass);
     return this;
   }
@@ -345,7 +348,7 @@ export class PassPipelineBuilder {
   /**
    * Add a module pass.
    */
-  addModule(pass: ModulePass): this {
+  addModule(pass: ModulePass<T>): this {
     this.passes.push(pass);
     return this;
   }
@@ -353,7 +356,7 @@ export class PassPipelineBuilder {
   /**
    * Add multiple passes.
    */
-  addAll(passes: readonly (SSAPass | ModulePass)[]): this {
+  addAll(passes: readonly (SSAPass<T> | ModulePass<T>)[]): this {
     this.passes.push(...passes);
     return this;
   }
@@ -361,22 +364,22 @@ export class PassPipelineBuilder {
   /**
    * Build the pipeline.
    */
-  build(): readonly (SSAPass | ModulePass)[] {
+  build(): readonly (SSAPass<T> | ModulePass<T>)[] {
     return this.passes;
   }
 
   /**
    * Run the pipeline on a function.
    */
-  runOnFunction(func: SSAFunction, config?: PassManagerConfig): void {
-    const functionPasses = this.passes.filter((p): p is SSAPass => "shouldRun" in p);
+  runOnFunction(func: SSAFunction<T>, config?: PassManagerConfig): void {
+    const functionPasses = this.passes.filter((p): p is SSAPass<T> => "shouldRun" in p);
     runPasses(func, functionPasses, config);
   }
 
   /**
    * Run the pipeline on a module.
    */
-  runOnModule(functions: Map<string, SSAFunction>, config?: PassManagerConfig): void {
+  runOnModule(functions: Map<string, SSAFunction<T>>, config?: PassManagerConfig): void {
     runModulePasses(functions, this.passes, config);
   }
 }
@@ -384,6 +387,6 @@ export class PassPipelineBuilder {
 /**
  * Create a new pass pipeline builder.
  */
-export function pipeline(): PassPipelineBuilder {
-  return new PassPipelineBuilder();
+export function pipeline<T = never>(): PassPipelineBuilder<T> {
+  return new PassPipelineBuilder<T>();
 }

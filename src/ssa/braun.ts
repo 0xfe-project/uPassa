@@ -11,15 +11,7 @@
  * The framework only inserts phi nodes (minimal IR); user instructions pass through.
  */
 
-import type {
-  SSAFunction,
-  BasicBlock,
-  Instruction,
-  Terminator,
-  ValueId,
-  BlockId,
-  PhiNode,
-} from "./ir.ts";
+import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId, PhiNode } from "./ir.ts";
 
 export class BraunError extends Error {}
 
@@ -40,9 +32,7 @@ export interface PreSSABlock<T> {
  * Variable references will be renamed to SSA values by Braun.
  * User expressions (T) flow through unchanged.
  */
-export type PreSSAValue<T> =
-  | { kind: "var"; name: string }
-  | { kind: "expr"; value: T };
+export type PreSSAValue<T> = { kind: "var"; name: string } | { kind: "expr"; value: T };
 
 /**
  * Pre-SSA terminator: variable names not yet renamed.

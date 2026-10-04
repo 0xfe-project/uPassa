@@ -7,7 +7,7 @@ import { L0, L1, L2, L3, type L0_Expr, type L1_Expr, type L2_Expr, type L3_Expr 
 
 /**
  * Pass 1: Desugar let bindings to lambda applications
- * 
+ *
  * (let ([x val]) body)  =>  ((lambda (x) body) val)
  */
 const desugarLetPass = pass({
@@ -34,7 +34,7 @@ export const desugarLet = buildWalker(desugarLetPass).run;
 
 /**
  * Pass 2: Make variable references explicit with binding depth
- * 
+ *
  * Tracks lexical depth and converts Var to Ref with depth information.
  */
 const explicitRefsPass = pass({
@@ -72,7 +72,7 @@ export const explicitRefs = buildWalker(explicitRefsPass).run;
 
 /**
  * Pass 3: Flatten nested expressions into sequences with temporaries
- * 
+ *
  * (+ (+ 1 2) 3)  =>  (seq [(temp 0 (+ 1 2))] (+ (ref t0) 3))
  */
 
