@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { runPipeline, runPipelineSteps } from "../../nanopass/pipeline.js";
 import { runPipeline as runSSAPipeline } from "../../ssa/pipeline.js";
+import { lower } from "../lower.js";
 import { FIXTURES as NANOPASS_FIXTURES, deepNestedLet, wideArithmetic } from "../../nanopass/fixtures.js";
 import { FIXTURES as SSA_FIXTURES } from "../../ssa/fixtures.js";
 
@@ -112,5 +113,59 @@ describe("SSA pipeline", () => {
 
     // Should complete without hanging
     expect(func.blocks.has("loop")).toBe(true);
+  });
+});
+
+describe("End-to-end: source → nanopass → SSA", () => {
+  it("lowers nested arithmetic to SSA", () => {
+    // source → L3
+    const l3 = runPipeline(NANOPASS_FIXTURES.nestedArithmetic);
+
+    // L3 → SSA
+    const func = lower(l3);
+
+    expect(func.blocks.has("entry")).toBe(true);
+    const entry = func.blocks.get("entry")!;
+
+    // Should have emitted add/mul/const instructions
+    const types = entry.instructions.map((i) => (i as { type: string }).type);
+    expect(types).toContain("const");
+    expect(types).toContain("mul");
+    expect(types).toContain("add");
+  });
+
+  it("lowers a flat arithmetic expression to SSA", () => {
+    const source = {
+      type: "Add" as const,
+      left: { type: "Int" as const, value: 1 },
+      right: { type: "Int" as const, value: 2 },
+    };
+    const l3 = runPipeline(source);
+    const func = lower(l3);
+
+    const entry = func.blocks.get("entry")!;
+    expect(entry.terminator.type).toBe("ret");
+    expect(entry.instructions.length).toBeGreaterThan(0);
+  });
+
+  it("produces a valid single-block CFG", () => {
+    const l3 = runPipeline(NANOPASS_FIXTURES.nestedArithmetic);
+    const func = lower(l3);
+
+    expect(func.blocks.size).toBe(1);
+    expect(func.entry).toBe("entry");
+
+    const entry = func.blocks.get("entry")!;
+    expect(entry.predecessors).toHaveLength(0);
+    expect(entry.successors).toHaveLength(0);
+  });
+
+  it("lowers deeply nested arithmetic", () => {
+    const l3 = runPipeline(wideArithmetic(20));
+    const func = lower(l3);
+
+    expect(func.blocks.has("entry")).toBe(true);
+    const entry = func.blocks.get("entry")!;
+    expect(entry.instructions.length).toBeGreaterThan(20);
   });
 });
