@@ -2,7 +2,7 @@
  * Nanopass transformations for the language chain
  */
 
-import { pass, sig } from "../../src/nanopass/index.js";
+import { pass, sig, buildWalker } from "../../src/nanopass/index.js";
 import { L0, L1, L2, L3, type L0_Expr, type L1_Expr, type L2_Expr, type L3_Expr } from "./languages.js";
 
 /**
@@ -10,7 +10,7 @@ import { L0, L1, L2, L3, type L0_Expr, type L1_Expr, type L2_Expr, type L3_Expr 
  * 
  * (let ([x val]) body)  =>  ((lambda (x) body) val)
  */
-export const desugarLet = pass({
+const desugarLetPass = pass({
   from: L0,
   to: L1,
   rules: {
@@ -30,12 +30,14 @@ export const desugarLet = pass({
   },
 });
 
+export const desugarLet = buildWalker(desugarLetPass).run;
+
 /**
  * Pass 2: Make variable references explicit with binding depth
  * 
  * Tracks lexical depth and converts Var to Ref with depth information.
  */
-export const explicitRefs = pass({
+const explicitRefsPass = pass({
   from: L1,
   to: L2,
   sig: sig(new Map<string, number>()),
@@ -66,6 +68,8 @@ export const explicitRefs = pass({
   },
 });
 
+export const explicitRefs = buildWalker(explicitRefsPass).run;
+
 /**
  * Pass 3: Flatten nested expressions into sequences with temporaries
  * 
@@ -74,7 +78,7 @@ export const explicitRefs = pass({
 
 let tempCounter = 0;
 
-export const flatten = pass({
+const flattenPass = pass({
   from: L2,
   to: L3,
   rules: {
@@ -120,6 +124,8 @@ export const flatten = pass({
     },
   },
 });
+
+export const flatten = buildWalker(flattenPass).run;
 
 /**
  * Reset temporary counter (for testing)
