@@ -36,31 +36,38 @@ export const desugarLet = buildWalker(desugarLetPass).run;
  * Pass 2: Make variable references explicit with binding depth
  *
  * Tracks lexical depth and converts Var to Ref with depth information.
+ *
+ * Threads two extra values: the current nesting level, and a map from
+ * name to the level at which it was bound. Depth of a reference is
+ * `currentLevel - bindingLevel`. Entering a lambda is O(1) (bump the
+ * level, bind the parameter, restore on exit) — not O(env size).
  */
 const explicitRefsPass = pass({
   from: L1,
   to: L2,
-  sig: sig(new Map<string, number>()),
-  init: () => [new Map<string, number>()],
+  sig: sig(0, new Map<string, number>()),
+  init: (): [number, Map<string, number>] => [0, new Map<string, number>()],
   rules: {
     Expr: {
-      Var: (node, rec, env): readonly [L2_Expr, Map<string, number>] => {
-        const depth = env.get(node.name) ?? 0;
-        return [{ type: "Ref", name: node.name, depth }, env];
+      Var: (node, rec, level, env): readonly [L2_Expr, number, Map<string, number>] => {
+        const bound = env.get(node.name);
+        const depth = bound === undefined ? 0 : level - bound;
+        return [{ type: "Ref", name: node.name, depth }, level, env];
       },
-      Lambda: (node, rec, env): readonly [L2_Expr, Map<string, number>] => {
-        const newEnv = new Map(env);
-        for (const [name, d] of env) {
-          newEnv.set(name, d + 1);
-        }
-        newEnv.set(node.param, 0);
-        const [body, _] = rec(node.body, newEnv);
+      Lambda: (node, rec, level, env): readonly [L2_Expr, number, Map<string, number>] => {
+        const prev = env.get(node.param);
+        env.set(node.param, level + 1);
+        const [body] = rec(node.body, level + 1, env);
+        // Restore the shadowed binding (or remove it) so siblings see the outer scope.
+        if (prev === undefined) env.delete(node.param);
+        else env.set(node.param, prev);
         return [
           {
             type: "Lambda",
             param: node.param,
             body,
           },
+          level,
           env,
         ];
       },
