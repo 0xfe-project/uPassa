@@ -40,9 +40,10 @@ export interface DomTree {
 
 /**
  * Build dominator tree using Lengauer-Tarjan algorithm.
+ * Generic over T: works on any IR extension.
  */
-export function buildDomTree(func: SSAFunction): DomTree {
-  const blocks = Array.from(func.blocks.values());
+export function buildDomTree<T>(func: SSAFunction<T>): DomTree {
+  const blocks = Array.from(func.blocks.values()) as BasicBlock<T>[];
   const entry = func.entry;
 
   // Step 1: DFS to assign preorder numbers
@@ -84,8 +85,8 @@ export function buildDomTree(func: SSAFunction): DomTree {
 /**
  * DFS to establish preorder and parent relationships.
  */
-function dfs(
-  blocks: BasicBlock[],
+function dfs<T>(
+  blocks: BasicBlock<T>[],
   entry: BlockId,
 ): {
   preorder: Map<BlockId, number>;
@@ -123,13 +124,13 @@ function dfs(
  * This is a simplified iterative dataflow algorithm, not the full Lengauer-Tarjan.
  * Good enough for typical CFGs, and much simpler to understand.
  */
-function computeDominators(
-  blocks: BasicBlock[],
+function computeDominators<T>(
+  blocks: BasicBlock<T>[],
   entry: BlockId,
   preorder: Map<BlockId, number>,
   parent: Map<BlockId, BlockId>,
 ): Map<BlockId, BlockId> {
-  const blockMap = new Map<BlockId, BasicBlock>();
+  const blockMap = new Map<BlockId, BasicBlock<T>>();
   for (const block of blocks) {
     blockMap.set(block.id, block);
   }
@@ -214,7 +215,7 @@ function computeDominators(
  * Dominance frontier of block X:
  * Set of blocks Y where X dominates a predecessor of Y, but does not strictly dominate Y.
  */
-function computeDominanceFrontiers(blocks: BasicBlock[], nodes: Map<BlockId, DomNode>): void {
+function computeDominanceFrontiers<T>(blocks: BasicBlock<T>[], nodes: Map<BlockId, DomNode>): void {
   for (const block of blocks) {
     if (block.predecessors.length < 2) continue;
 

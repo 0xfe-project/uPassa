@@ -1,78 +1,77 @@
 /**
- * Braun et al.'s SSA construction algorithm
+ * Braun et al.'s SSA construction algorithm (generic)
  *
  * Reference: "Simple and Efficient Construction of Static Single Assignment Form"
  * https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
  *
- * This is a simple, on-the-fly SSA construction algorithm that doesn't require
- * computing dominance frontiers upfront. Instead, it places phi nodes lazily
- * during variable renaming.
+ * This algorithm places phi nodes lazily during variable renaming, without
+ * computing dominance frontiers upfront.
  *
- * Input convention (what user must provide):
- * - Basic blocks with explicit control flow (labels + jumps)
- * - Flattened scopes (all variables are names, no nested let/lambda)
- * - Assignments are statements (not expressions)
- *
- * Output: SSA IR with phi nodes inserted at merge points.
+ * Generic over T: user-provided instruction and terminator types flow through.
+ * The framework only inserts phi nodes (minimal IR); user instructions pass through.
  */
 
 import type {
   SSAFunction,
-  SSAModule,
   BasicBlock,
   Instruction,
   Terminator,
   ValueId,
   BlockId,
-  ValueType,
+  PhiNode,
 } from "./ir.ts";
 
 export class BraunError extends Error {}
 
 /**
- * Input to Braun algorithm: CFG in tree form (before SSA)
+ * Input to Braun: pre-SSA CFG with variable names.
+ * Generic over T: user's instruction/terminator types.
  */
-export interface PreSSABlock {
+export interface PreSSABlock<T> {
   id: BlockId;
-  // Variables assigned in this block (name -> value expression)
-  assignments: Map<string, PreSSAValue>;
-  terminator: PreSSATerminator;
+  // Variable assignments in this block: name -> value expression
+  assignments: Map<string, PreSSAValue<T>>;
+  terminator: PreSSATerminator<T>;
   predecessors: BlockId[];
 }
 
-export type PreSSAValue =
-  | { kind: "const"; value: number | boolean; type: ValueType }
+/**
+ * Pre-SSA value: either a variable reference or a user-defined expression.
+ * Variable references will be renamed to SSA values by Braun.
+ * User expressions (T) flow through unchanged.
+ */
+export type PreSSAValue<T> =
   | { kind: "var"; name: string }
-  | { kind: "binop"; op: string; left: string; right: string; type: ValueType }
-  | { kind: "unop"; op: string; operand: string; type: ValueType }
-  | { kind: "call"; func: string; args: string[]; type: ValueType };
+  | { kind: "expr"; value: T };
 
-export type PreSSATerminator =
-  | { kind: "jmp"; target: BlockId }
-  | { kind: "br"; cond: string; then: BlockId; else: BlockId }
-  | { kind: "ret"; value?: string };
+/**
+ * Pre-SSA terminator: variable names not yet renamed.
+ * Generic over T: user can provide custom terminator types.
+ */
+export type PreSSATerminator<T> =
+  | { kind: "jump"; target: BlockId }
+  | { kind: "branch"; cond: string; ifTrue: BlockId; ifFalse: BlockId }
+  | { kind: "ret"; value?: string }
+  | { kind: "user"; term: T };
 
-export interface PreSSAFunction {
+export interface PreSSAFunction<T> {
   id: string;
-  params: Array<{ name: string; type: ValueType }>;
-  returnType: ValueType;
-  blocks: Map<BlockId, PreSSABlock>;
+  blocks: Map<BlockId, PreSSABlock<T>>;
   entry: BlockId;
 }
 
 /**
- * Braun algorithm state for one function
+ * Braun algorithm state
  */
-class BraunBuilder {
-  private readonly func: PreSSAFunction;
-  private readonly blocks: Map<BlockId, BasicBlock> = new Map();
+class BraunBuilder<T> {
+  private readonly preFunc: PreSSAFunction<T>;
+  private readonly blocks: Map<BlockId, BasicBlock<T>> = new Map();
 
-  // Current definitions: variable name -> SSA value ID
-  private readonly currentDef = new Map<string, ValueId>();
+  // Block-local definitions: block -> variable -> SSA value ID
+  private readonly blockDefs = new Map<BlockId, Map<string, ValueId>>();
 
-  // Incomplete phi nodes (block -> variable -> phi instruction)
-  // Used when block not sealed yet (don't know all predecessors)
-  private readonly incompletePhis = new Map<BlockId, Map<string, Instruction>>();
+  // Incomplete phi nodes: block -> variable -> phi instruction index
+  private readonly incompletePhis = new Map<BlockId, Map<string, number>>();
 
   // Sealed blocks (all predecessors known)
   private readonly sealed = new Set<BlockId>();
@@ -80,52 +79,47 @@ class BraunBuilder {
   // Value ID counter
   private valueCounter = 0;
 
-  // Block definitions: block -> variable -> value ID
-  private readonly blockDefs = new Map<BlockId, Map<string, ValueId>>();
+  constructor(preFunc: PreSSAFunction<T>) {
+    this.preFunc = preFunc;
 
-  constructor(func: PreSSAFunction) {
-    this.func = func;
-
-    // Initialize blocks
-    for (const [id, preBlock] of func.blocks) {
+    // Initialize SSA blocks
+    for (const [id, preBlock] of preFunc.blocks) {
+      const successors = this.getSuccessors(preBlock.terminator);
       this.blocks.set(id, {
         id,
         instructions: [],
-        terminator: { kind: "unreachable" }, // Will be filled
+        terminator: { type: "unreachable" } as Terminator<T>,
         predecessors: preBlock.predecessors,
-        successors: this.getSuccessors(preBlock.terminator),
+        successors,
       });
       this.blockDefs.set(id, new Map());
     }
   }
 
   private freshValue(): ValueId {
-    return `v${this.valueCounter++}`;
+    return `%${this.valueCounter++}`;
   }
 
-  private getSuccessors(term: PreSSATerminator): BlockId[] {
+  private getSuccessors(term: PreSSATerminator<T>): BlockId[] {
     switch (term.kind) {
-      case "jmp":
+      case "jump":
         return [term.target];
-      case "br":
-        return [term.then, term.else];
+      case "branch":
+        return [term.ifTrue, term.ifFalse];
       case "ret":
+      case "user":
         return [];
     }
   }
 
   /**
-   * Read variable at current position.
-   * This is the core of Braun algorithm.
+   * Read variable at current position (core of Braun algorithm).
    */
   private readVariable(variable: string, block: BlockId): ValueId {
-    // Local value (defined in current block)
     const localDef = this.blockDefs.get(block)?.get(variable);
     if (localDef !== undefined) {
       return localDef;
     }
-
-    // Global value (need to look at predecessors)
     return this.readVariableRecursive(variable, block);
   }
 
@@ -136,21 +130,15 @@ class BraunBuilder {
     }
 
     const val: ValueId = !this.sealed.has(block)
-      ? // Block not sealed yet: create incomplete phi
-        this.addIncompletePhi(variable, block)
+      ? this.addIncompletePhi(variable, block)
       : ssaBlock.predecessors.length === 1
-        ? // Only one predecessor: no phi needed
-          this.readVariable(variable, ssaBlock.predecessors[0]!)
-        : // Multiple predecessors: need phi
-          this.addPhi(variable, block);
+        ? this.readVariable(variable, ssaBlock.predecessors[0]!)
+        : this.addPhi(variable, block);
 
     this.writeVariable(variable, block, val);
     return val;
   }
 
-  /**
-   * Write variable definition in a block.
-   */
   private writeVariable(variable: string, block: BlockId, value: ValueId): void {
     let defs = this.blockDefs.get(block);
     if (!defs) {
@@ -160,9 +148,6 @@ class BraunBuilder {
     defs.set(variable, value);
   }
 
-  /**
-   * Add phi node to block.
-   */
   private addPhi(variable: string, block: BlockId): ValueId {
     const ssaBlock = this.blocks.get(block);
     if (!ssaBlock) {
@@ -170,88 +155,79 @@ class BraunBuilder {
     }
 
     const phiId = this.freshValue();
-    const incoming: Array<{ block: BlockId; value: ValueId }> = [];
+    const incoming: Array<readonly [BlockId, ValueId]> = [];
 
     for (const pred of ssaBlock.predecessors) {
       const value = this.readVariable(variable, pred);
-      incoming.push({ block: pred, value });
+      incoming.push([pred, value] as const);
     }
 
-    const phi: Instruction = {
-      kind: "phi",
-      id: phiId,
-      type: "int", // TODO: proper type tracking
+    const phi: Instruction<T> = {
+      type: "phi",
+      dest: phiId,
       incoming,
     };
 
-    // Phi nodes go at the beginning of the block
     ssaBlock.instructions.unshift(phi);
-
     return phiId;
   }
 
-  /**
-   * Add incomplete phi (placeholder when block not sealed).
-   */
   private addIncompletePhi(variable: string, block: BlockId): ValueId {
     const phiId = this.freshValue();
-    const phi: Instruction = {
-      kind: "phi",
-      id: phiId,
-      type: "int", // TODO: proper type tracking
+    const phi: Instruction<T> = {
+      type: "phi",
+      dest: phiId,
       incoming: [],
     };
 
     const ssaBlock = this.blocks.get(block);
-    if (ssaBlock) {
-      ssaBlock.instructions.unshift(phi);
+    if (!ssaBlock) {
+      throw new BraunError(`Block ${block} not found`);
     }
 
-    // Record as incomplete
+    const phiIndex = ssaBlock.instructions.length;
+    ssaBlock.instructions.push(phi);
+
     let blockPhis = this.incompletePhis.get(block);
     if (!blockPhis) {
       blockPhis = new Map();
       this.incompletePhis.set(block, blockPhis);
     }
-    blockPhis.set(variable, phi);
+    blockPhis.set(variable, phiIndex);
 
     return phiId;
   }
 
-  /**
-   * Seal a block (all predecessors processed).
-   */
   private sealBlock(block: BlockId): void {
     const blockPhis = this.incompletePhis.get(block);
     if (blockPhis) {
-      for (const [variable, phi] of blockPhis) {
-        this.fillIncompletePhi(phi, variable, block);
+      for (const [variable, phiIndex] of blockPhis) {
+        this.fillIncompletePhi(variable, block, phiIndex);
       }
       this.incompletePhis.delete(block);
     }
     this.sealed.add(block);
   }
 
-  /**
-   * Fill in an incomplete phi node now that block is sealed.
-   */
-  private fillIncompletePhi(phi: Instruction, variable: string, block: BlockId): void {
-    if (phi.kind !== "phi") return;
-
+  private fillIncompletePhi(variable: string, block: BlockId, phiIndex: number): void {
     const ssaBlock = this.blocks.get(block);
     if (!ssaBlock) return;
 
+    const phi = ssaBlock.instructions[phiIndex];
+    if (!phi || !isPhi(phi)) return;
+
+    const incoming: Array<readonly [BlockId, ValueId]> = [];
     for (const pred of ssaBlock.predecessors) {
       const value = this.readVariable(variable, pred);
-      phi.incoming.push({ block: pred, value });
+      incoming.push([pred, value] as const);
     }
+
+    // Update phi (cast to mutable to fill)
+    (phi as any).incoming = incoming;
   }
 
-  /**
-   * Process a block: convert assignments to SSA form.
-   */
   private processBlock(blockId: BlockId): void {
-    const preBlock = this.func.blocks.get(blockId);
+    const preBlock = this.preFunc.blocks.get(blockId);
     const ssaBlock = this.blocks.get(blockId);
     if (!preBlock || !ssaBlock) {
       throw new BraunError(`Block ${blockId} not found`);
@@ -259,63 +235,49 @@ class BraunBuilder {
 
     // Process assignments
     for (const [varName, value] of preBlock.assignments) {
-      const ssaValue = this.convertValue(value);
+      const ssaValue = this.convertValue(value, blockId);
       this.writeVariable(varName, blockId, ssaValue);
     }
 
     // Convert terminator
-    ssaBlock.terminator = this.convertTerminator(preBlock.terminator);
+    ssaBlock.terminator = this.convertTerminator(preBlock.terminator, blockId);
   }
 
-  /**
-   * Convert pre-SSA value to SSA instruction.
-   */
-  private convertValue(value: PreSSAValue): ValueId {
-    const id = this.freshValue();
-    // TODO: Add instruction to current block
-    return id;
+  private convertValue(value: PreSSAValue<T>, blockId: BlockId): ValueId {
+    if (value.kind === "var") {
+      return this.readVariable(value.name, blockId);
+    } else {
+      // User expression: allocate a fresh value ID
+      // User is responsible for adding the actual instruction to the block
+      // (or we could provide a hook here)
+      return this.freshValue();
+    }
   }
 
-  /**
-   * Convert pre-SSA terminator to SSA terminator.
-   */
-  private convertTerminator(term: PreSSATerminator): Terminator {
+  private convertTerminator(term: PreSSATerminator<T>, blockId: BlockId): Terminator<T> {
     switch (term.kind) {
-      case "jmp":
-        return { kind: "jmp", target: term.target };
-      case "br": {
-        const cond = this.currentDef.get(term.cond);
-        if (!cond) {
-          throw new BraunError(`Undefined variable in branch: ${term.cond}`);
-        }
-        return { kind: "br", cond, then: term.then, else: term.else };
+      case "jump":
+        return { type: "jump", target: term.target };
+      case "branch": {
+        const cond = this.readVariable(term.cond, blockId);
+        return { type: "branch", cond, ifTrue: term.ifTrue, ifFalse: term.ifFalse };
       }
       case "ret": {
-        if (!term.value) {
-          return { kind: "ret" };
+        if (term.value === undefined) {
+          return { type: "ret" };
         }
-        const value = this.currentDef.get(term.value);
-        if (!value) {
-          throw new BraunError(`Undefined variable in return: ${term.value}`);
-        }
-        return { kind: "ret", value };
+        const value = this.readVariable(term.value, blockId);
+        return { type: "ret", value };
       }
+      case "user":
+        return term.term as Terminator<T>;
     }
   }
 
-  /**
-   * Build SSA form using Braun algorithm.
-   */
-  build(): SSAFunction {
-    // Initialize parameters
-    for (const param of this.func.params) {
-      const paramId = this.freshValue();
-      this.writeVariable(param.name, this.func.entry, paramId);
-    }
-
-    // Process blocks in dominator tree order (simplified: just use entry-first order)
+  build(): SSAFunction<T> {
+    // Process blocks in entry-first order (simplified; proper impl would use dominator tree order)
     const visited = new Set<BlockId>();
-    const queue = [this.func.entry];
+    const queue = [this.preFunc.entry];
 
     while (queue.length > 0) {
       const blockId = queue.shift()!;
@@ -325,7 +287,6 @@ class BraunBuilder {
       this.processBlock(blockId);
       this.sealBlock(blockId);
 
-      // Add successors
       const block = this.blocks.get(blockId);
       if (block) {
         queue.push(...block.successors);
@@ -333,35 +294,23 @@ class BraunBuilder {
     }
 
     return {
-      id: this.func.id,
-      params: this.func.params.map((p, i) => ({ id: `v${i}`, type: p.type })),
-      returnType: this.func.returnType,
+      id: this.preFunc.id,
       blocks: this.blocks,
-      entry: this.func.entry,
+      entry: this.preFunc.entry,
     };
   }
 }
 
-/**
- * Convert pre-SSA function to SSA form using Braun algorithm.
- */
-export function toSSA(func: PreSSAFunction): SSAFunction {
-  const builder = new BraunBuilder(func);
-  return builder.build();
+// Type guard for phi nodes
+function isPhi<T>(inst: Instruction<T>): inst is PhiNode {
+  return (inst as any).type === "phi";
 }
 
 /**
- * Convert pre-SSA module to SSA form.
+ * Convert pre-SSA function to SSA form using Braun algorithm.
+ * Generic over T: user instruction/terminator types.
  */
-export function moduleToSSA(functions: Map<string, PreSSAFunction>, entry: string): SSAModule {
-  const ssaFunctions = new Map<string, SSAFunction>();
-
-  for (const [id, func] of functions) {
-    ssaFunctions.set(id, toSSA(func));
-  }
-
-  return {
-    functions: ssaFunctions,
-    entry,
-  };
+export function toSSA<T>(func: PreSSAFunction<T>): SSAFunction<T> {
+  const builder = new BraunBuilder(func);
+  return builder.build();
 }

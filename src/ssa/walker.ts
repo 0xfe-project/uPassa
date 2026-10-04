@@ -1,24 +1,13 @@
 /**
- * SSA codegen: generate graph walkers and transformers
+ * SSA walker: CFG traversal and transformation utilities
  *
- * Unlike nanopass (tree → tree with fusion), SSA codegen generates:
+ * Provides:
  * - Graph visitors (for analysis passes)
  * - In-place transformers (for optimization passes)
  * - Block iterators (CFG traversal: DFS, RPO, etc.)
- *
- * Key differences from tree codegen:
- * - No automatic fusion (graphs have cycles and shared nodes)
- * - No immutable reconstruction (SSA IR is mutable)
- * - Visitor pattern instead of structural recursion
- *
- * Generated code supports common patterns:
- * - visitBlock: process each block
- * - visitInstruction: process each instruction
- * - walkCFG: traverse in specified order
- * - replaceInstruction: transform in-place
  */
 
-import type { SSAFunction, BasicBlock, Instruction, BlockId, ValueType } from "./ir.ts";
+import type { SSAFunction, BasicBlock, Instruction, BlockId } from "./ir.ts";
 
 /**
  * CFG traversal orders
@@ -33,21 +22,21 @@ export type TraversalOrder =
 /**
  * Block visitor: called for each block during traversal
  */
-export interface BlockVisitor {
-  (block: BasicBlock, func: SSAFunction): void | boolean; // return false to skip
+export interface BlockVisitor<T = never> {
+  (block: BasicBlock<T>, func: SSAFunction<T>): void | boolean; // return false to skip
 }
 
 /**
  * Instruction visitor: called for each instruction
  */
-export interface InstructionVisitor {
-  (inst: Instruction, block: BasicBlock, func: SSAFunction): void | "remove" | "skip-rest";
+export interface InstructionVisitor<T = never> {
+  (inst: Instruction<T>, block: BasicBlock<T>, func: SSAFunction<T>): void | "remove" | "skip-rest";
 }
 
 /**
  * Walk CFG in specified order, calling visitor for each block.
  */
-export function walkCFG(func: SSAFunction, order: TraversalOrder, visitor: BlockVisitor): void {
+export function walkCFG<T>(func: SSAFunction<T>, order: TraversalOrder, visitor: BlockVisitor<T>): void {
   const visited = new Set<BlockId>();
 
   switch (order) {
@@ -72,7 +61,7 @@ export function walkCFG(func: SSAFunction, order: TraversalOrder, visitor: Block
 /**
  * Walk blocks in entry-first order (BFS-like).
  */
-function walkEntryFirst(func: SSAFunction, visitor: BlockVisitor, visited: Set<BlockId>): void {
+function walkEntryFirst<T>(func: SSAFunction<T>, visitor: BlockVisitor<T>, visited: Set<BlockId>): void {
   const queue = [func.entry];
 
   while (queue.length > 0) {
@@ -93,7 +82,7 @@ function walkEntryFirst(func: SSAFunction, visitor: BlockVisitor, visited: Set<B
 /**
  * Walk blocks in DFS order.
  */
-function walkDFS(func: SSAFunction, blockId: BlockId, visitor: BlockVisitor, visited: Set<BlockId>): void {
+function walkDFS<T>(func: SSAFunction<T>, blockId: BlockId, visitor: BlockVisitor<T>, visited: Set<BlockId>): void {
   if (visited.has(blockId)) return;
   visited.add(blockId);
 
@@ -112,7 +101,7 @@ function walkDFS(func: SSAFunction, blockId: BlockId, visitor: BlockVisitor, vis
  * Walk blocks in reverse postorder (RPO).
  * RPO is a common order for forward dataflow analysis.
  */
-function walkRPO(func: SSAFunction, visitor: BlockVisitor): void {
+function walkRPO<T>(func: SSAFunction<T>, visitor: BlockVisitor<T>): void {
   const postorder = computePostorder(func);
   postorder.reverse();
 
@@ -126,7 +115,7 @@ function walkRPO(func: SSAFunction, visitor: BlockVisitor): void {
 /**
  * Walk blocks in postorder.
  */
-function walkPO(func: SSAFunction, visitor: BlockVisitor): void {
+function walkPO<T>(func: SSAFunction<T>, visitor: BlockVisitor<T>): void {
   const postorder = computePostorder(func);
 
   for (const blockId of postorder) {
@@ -139,7 +128,7 @@ function walkPO(func: SSAFunction, visitor: BlockVisitor): void {
 /**
  * Compute postorder traversal.
  */
-function computePostorder(func: SSAFunction): BlockId[] {
+function computePostorder<T>(func: SSAFunction<T>): BlockId[] {
   const visited = new Set<BlockId>();
   const postorder: BlockId[] = [];
 
@@ -164,10 +153,10 @@ function computePostorder(func: SSAFunction): BlockId[] {
 /**
  * Visit all instructions in a function.
  */
-export function walkInstructions(
-  func: SSAFunction,
+export function walkInstructions<T>(
+  func: SSAFunction<T>,
   order: TraversalOrder,
-  visitor: InstructionVisitor,
+  visitor: InstructionVisitor<T>,
 ): void {
   walkCFG(func, order, (block) => {
     for (let i = 0; i < block.instructions.length; i++) {
@@ -187,13 +176,13 @@ export function walkInstructions(
 /**
  * Generic instruction transformer: visits each instruction and allows replacement.
  */
-export interface InstructionTransformer {
+export interface InstructionTransformer<T = never> {
   (
-    inst: Instruction,
-    block: BasicBlock,
-    func: SSAFunction,
+    inst: Instruction<T>,
+    block: BasicBlock<T>,
+    func: SSAFunction<T>,
   ):
-    | Instruction // Replace with new instruction
+    | Instruction<T> // Replace with new instruction
     | null // Remove instruction
     | undefined; // Keep unchanged
 }
@@ -201,10 +190,10 @@ export interface InstructionTransformer {
 /**
  * Transform instructions in-place.
  */
-export function transformInstructions(
-  func: SSAFunction,
+export function transformInstructions<T>(
+  func: SSAFunction<T>,
   order: TraversalOrder,
-  transformer: InstructionTransformer,
+  transformer: InstructionTransformer<T>,
 ): { changed: boolean } {
   let changed = false;
 
@@ -232,12 +221,12 @@ export function transformInstructions(
 /**
  * Block transformer: allows block-level modifications.
  */
-export interface BlockTransformer {
+export interface BlockTransformer<T = never> {
   (
-    block: BasicBlock,
-    func: SSAFunction,
+    block: BasicBlock<T>,
+    func: SSAFunction<T>,
   ):
-    | BasicBlock // Replace block
+    | BasicBlock<T> // Replace block
     | null // Remove block (dangerous: must fix predecessors!)
     | undefined; // Keep unchanged
 }
@@ -245,10 +234,10 @@ export interface BlockTransformer {
 /**
  * Transform blocks in-place.
  */
-export function transformBlocks(
-  func: SSAFunction,
+export function transformBlocks<T>(
+  func: SSAFunction<T>,
   order: TraversalOrder,
-  transformer: BlockTransformer,
+  transformer: BlockTransformer<T>,
 ): { changed: boolean } {
   let changed = false;
   const toRemove: BlockId[] = [];
@@ -297,87 +286,4 @@ export function worklist<T>(
       }
     }
   }
-}
-
-/**
- * Builder pattern for constructing new SSA functions.
- * Useful when generating SSA from scratch.
- */
-export class SSABuilder {
-  public readonly funcId: string;
-  public readonly blocks: Map<BlockId, BasicBlock>;
-  public entry: BlockId;
-  private blockCounter = 0;
-  private valueCounter = 0;
-
-  constructor(funcId: string, blocks?: Map<BlockId, BasicBlock>, entry?: BlockId) {
-    this.funcId = funcId;
-    this.blocks = blocks ?? new Map<BlockId, BasicBlock>();
-    this.entry = entry ?? "entry";
-  }
-
-  /**
-   * Create a new block ID.
-   */
-  freshBlock(): BlockId {
-    return `bb${this.blockCounter++}`;
-  }
-
-  /**
-   * Create a new value ID.
-   */
-  freshValue(): string {
-    return `v${this.valueCounter++}`;
-  }
-
-  /**
-   * Add a block to the function.
-   */
-  addBlock(id: BlockId, block: BasicBlock): void {
-    this.blocks.set(id, block);
-  }
-
-  /**
-   * Build the final SSA function.
-   */
-  build(params: Array<{ id: string; type: ValueType }>, returnType: ValueType): SSAFunction {
-    return {
-      id: this.funcId,
-      params,
-      returnType,
-      blocks: this.blocks,
-      entry: this.entry,
-    };
-  }
-}
-
-/**
- * Utility: collect all instructions of a specific kind.
- */
-export function collectInstructions<K extends Instruction["kind"]>(
-  func: SSAFunction,
-  kind: K,
-): Array<Extract<Instruction, { kind: K }>> {
-  const results: Array<Extract<Instruction, { kind: K }>> = [];
-
-  walkInstructions(func, "entry-first", (inst) => {
-    if (inst.kind === kind) {
-      results.push(inst as Extract<Instruction, { kind: K }>);
-    }
-  });
-
-  return results;
-}
-
-/**
- * Utility: count instructions by kind.
- */
-export function countInstructions(func: SSAFunction): Map<Instruction["kind"], number> {
-  const counts = new Map<Instruction["kind"], number>();
-
-  walkInstructions(func, "entry-first", (inst) => {
-    counts.set(inst.kind, (counts.get(inst.kind) ?? 0) + 1);
-  });
-
-  return counts;
 }

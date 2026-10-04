@@ -23,125 +23,51 @@
 // TODO: Import L_final language definition once nanopass chain is designed
 // import type { L_final } from "../nanopass/langs/l-final.ts";
 
-import type { SSAFunction, BlockId, ValueType } from "../../src/ssa/ir.ts";
-import { SSABuilder } from "../../src/ssa/codegen.ts";
+import type { SSAFunction, BasicBlock, BlockId } from "../../src/ssa/ir.ts";
 
 /**
  * Lower result: CFG ready for SSA construction
  */
-export interface LowerResult {
-  /** The function in pre-SSA form (explicit control flow, no phi nodes yet) */
-  cfg: SSAFunction;
-
-  /** Variable mapping (source name → initial block assignments) */
-  variables: Map<string, { block: BlockId; value: string }>;
+export interface LowerResult<T> {
+  func: SSAFunction<T>;
 }
 
 /**
- * Lower L_final tree to SSA IR (CFG form, before phi insertion).
+ * Lower a nanopass tree to SSA IR.
  *
- * This produces a CFG that will be fed into the Braun algorithm
- * to construct proper SSA form with phi nodes.
- */
-export function lowerToSSA(tree: unknown /* L_final.Program */): LowerResult {
-  // TODO: Implement once L_final is defined
-  throw new Error("lowerToSSA: not implemented yet (requires L_final definition)");
-}
-
-/**
- * Lower a single function definition.
- */
-function lowerFunction(func: unknown /* L_final.Function */): SSAFunction {
-  // TODO: Implement
-  throw new Error("lowerFunction: not implemented yet");
-}
-
-/**
- * Lower an expression to a sequence of instructions.
- */
-function lowerExpression(
-  expr: unknown /* L_final.Expr */,
-  builder: SSABuilder,
-  currentBlock: BlockId,
-): { value: string; block: BlockId } {
-  // TODO: Implement
-  throw new Error("lowerExpression: not implemented yet");
-}
-
-/**
- * Lower a control flow construct (if, loop, sequence).
- */
-function lowerControl(
-  control: unknown /* L_final.Control */,
-  builder: SSABuilder,
-  currentBlock: BlockId,
-): BlockId {
-  // TODO: Implement
-  throw new Error("lowerControl: not implemented yet");
-}
-
-/**
- * Placeholder: Example of what lowering might look like
+ * This is the bridge between nanopass (functional tree rewriting)
+ * and SSA (graph-based optimization).
  *
- * Input (L_final pseudo-tree):
- * ```
- * (define (add-one x)
- *   (+ x 1))
- * ```
- *
- * Output (CFG before SSA):
- * ```
- * entry:
- *   v0 = param x
- *   v1 = const 1
- *   v2 = add v0 v1
- *   ret v2
- * ```
- *
- * After Braun (SSA with phi nodes):
- * ```
- * entry:
- *   v0 = param x
- *   v1 = const 1
- *   v2 = add v0 v1
- *   ret v2
- * ```
- * (In this case, no phi nodes needed since no control flow merges)
+ * @param tree - Final nanopass tree
+ * @returns CFG ready for SSA construction
  */
-export function exampleLowering(): SSAFunction {
-  const builder = new SSABuilder("add-one");
+export function lower(tree: unknown): LowerResult<unknown> {
+  // TODO: Implement lowering once L_final is defined
+  throw new Error("Lowering not yet implemented - waiting for nanopass language chain");
+}
 
-  // Single basic block
-  const entry = builder.freshBlock();
-  builder.entry = entry;
+/**
+ * Example: Lower a simple arithmetic expression to SSA
+ */
+export function exampleLowering(): SSAFunction<{ op: string; args: string[] }> {
+  const entry: BlockId = "entry";
+  const blocks = new Map<BlockId, BasicBlock<{ op: string; args: string[] }>>();
 
-  const intType: ValueType = "int";
-
-  builder.addBlock(entry, {
+  blocks.set(entry, {
     id: entry,
     instructions: [
-      {
-        kind: "const",
-        id: "v1",
-        type: intType,
-        value: 1,
-      },
-      {
-        kind: "binop",
-        id: "v2",
-        type: intType,
-        op: "add",
-        left: "v0",
-        right: "v1",
-      },
+      { op: "const", args: ["1"] },
+      { op: "const", args: ["2"] },
+      { op: "add", args: ["%1", "%2"] },
     ],
-    terminator: {
-      kind: "ret",
-      value: "v2",
-    },
+    terminator: { type: "ret", value: "%3" },
     predecessors: [],
     successors: [],
   });
 
-  return builder.build([{ id: "v0", type: intType }], intType);
+  return {
+    id: "example",
+    entry,
+    blocks,
+  };
 }

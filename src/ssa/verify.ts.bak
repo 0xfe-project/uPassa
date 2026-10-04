@@ -11,27 +11,9 @@
  * Should be run after each SSA pass to catch bugs early.
  */
 
-import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId, JumpNode, BranchNode, RetNode, UnreachableNode } from "./ir.ts";
+import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId } from "./ir.ts";
 import type { DomTree } from "./analysis/domtree.ts";
 import { buildDomTree, dominates } from "./analysis/domtree.ts";
-import { isPhi } from "./ir.ts";
-
-// Local type guards for terminators
-function isJump<T>(term: Terminator<T>): term is JumpNode {
-  return typeof term === "object" && term !== null && "type" in term && term.type === "jump";
-}
-
-function isBranch<T>(term: Terminator<T>): term is BranchNode {
-  return typeof term === "object" && term !== null && "type" in term && term.type === "branch";
-}
-
-function isRet<T>(term: Terminator<T>): term is RetNode {
-  return typeof term === "object" && term !== null && "type" in term && term.type === "ret";
-}
-
-function isUnreachable<T>(term: Terminator<T>): term is UnreachableNode {
-  return typeof term === "object" && term !== null && "type" in term && term.type === "unreachable";
-}
 
 export class SSAVerifyError extends Error {
   public readonly details: { errors: string[] } | undefined;
@@ -54,7 +36,7 @@ export interface VerifyResult {
  * Verify SSA form for a function.
  * Throws SSAVerifyError if invalid.
  */
-export function verifySSA<T>(func: SSAFunction<T>): void {
+export function verifySSA(func: SSAFunction): void {
   const errors: string[] = [];
 
   try {
@@ -96,7 +78,7 @@ export function verifySSA<T>(func: SSAFunction<T>): void {
 /**
  * Verify SSA form, returning result without throwing.
  */
-export function verifySSASafe<T>(func: SSAFunction<T>): VerifyResult {
+export function verifySSASafe(func: SSAFunction): VerifyResult {
   try {
     verifySSA(func);
     return { valid: true, errors: [] };
@@ -111,7 +93,7 @@ export function verifySSASafe<T>(func: SSAFunction<T>): VerifyResult {
 /**
  * Check that all blocks are reachable from entry.
  */
-function checkReachability<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkReachability(func: SSAFunction, errors: string[]): void {
   const reachable = new Set<BlockId>();
   const queue = [func.entry];
 
@@ -136,7 +118,7 @@ function checkReachability<T>(func: SSAFunction<T>, errors: string[]): void {
 /**
  * Check that each value is defined exactly once.
  */
-function checkUniqueDefs<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkUniqueDefs(func: SSAFunction, errors: string[]): void {
   const defs = new Map<ValueId, { block: BlockId; inst: number }>();
 
   for (const [blockId, block] of func.blocks) {
@@ -160,10 +142,14 @@ function checkUniqueDefs<T>(func: SSAFunction<T>, errors: string[]): void {
 /**
  * Check that every use has a corresponding definition.
  */
-function checkUsesHaveDefs<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkUsesHaveDefs(func: SSAFunction, errors: string[]): void {
   const defs = new Set<ValueId>();
 
   // Collect all definitions
+  for (const param of func.params) {
+    defs.add(param.id);
+  }
+
   for (const block of func.blocks.values()) {
     for (const inst of block.instructions) {
       if (hasDefinition(inst)) {
@@ -180,7 +166,7 @@ function checkUsesHaveDefs<T>(func: SSAFunction<T>, errors: string[]): void {
 
       for (const use of uses) {
         if (!defs.has(use)) {
-          errors.push(`Use of undefined value ${use} in ${blockId}:${i}`);
+          errors.push(`Use of undefined value ${use} in ${blockId}:${i} (${inst.kind})`);
         }
       }
     }
@@ -198,7 +184,7 @@ function checkUsesHaveDefs<T>(func: SSAFunction<T>, errors: string[]): void {
 /**
  * Check that definitions dominate all uses (except phi back-edges).
  */
-function checkDominance<T>(func: SSAFunction<T>, domTree: DomTree, errors: string[]): void {
+function checkDominance(func: SSAFunction, domTree: DomTree, errors: string[]): void {
   const defBlock = new Map<ValueId, BlockId>();
 
   // Map values to their defining blocks
@@ -220,14 +206,16 @@ function checkDominance<T>(func: SSAFunction<T>, domTree: DomTree, errors: strin
         if (!defBlk) continue; // Already caught by checkUsesHaveDefs
 
         // Special case: phi nodes can use values from predecessors
-        if (isPhi(inst)) {
-          for (const [predBlock, value] of inst.incoming) {
-            if (value === use) {
+        if (inst.kind === "phi") {
+          const phi = inst as Extract<Instruction, { kind: "phi" }>;
+
+          for (const incoming of phi.incoming) {
+            if (incoming.value === use) {
               // Check that definition dominates the predecessor block's end
-              if (!dominates(domTree, defBlk, predBlock)) {
+              if (!dominates(domTree, defBlk, incoming.block)) {
                 errors.push(
                   `Definition of ${use} in ${defBlk} does not dominate ` +
-                    `phi use in ${blockId} from predecessor ${predBlock}`,
+                    `phi use in ${blockId} from predecessor ${incoming.block}`,
                 );
               }
             }
@@ -235,7 +223,9 @@ function checkDominance<T>(func: SSAFunction<T>, domTree: DomTree, errors: strin
         } else {
           // Normal instruction: definition must dominate this block
           if (!dominates(domTree, defBlk, blockId)) {
-            errors.push(`Definition of ${use} in ${defBlk} does not dominate use in ${blockId}`);
+            errors.push(
+              `Definition of ${use} in ${defBlk} does not dominate use in ${blockId} (${inst.kind})`,
+            );
           }
         }
       }
@@ -255,12 +245,12 @@ function checkDominance<T>(func: SSAFunction<T>, domTree: DomTree, errors: strin
 /**
  * Check that phi nodes only appear at merge points.
  */
-function checkPhiPlacement<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkPhiPlacement(func: SSAFunction, errors: string[]): void {
   for (const [blockId, block] of func.blocks) {
     let seenNonPhi = false;
 
     for (const inst of block.instructions) {
-      if (isPhi(inst)) {
+      if (inst.kind === "phi") {
         if (seenNonPhi) {
           errors.push(`Phi node appears after non-phi instruction in ${blockId}`);
         }
@@ -271,7 +261,8 @@ function checkPhiPlacement<T>(func: SSAFunction<T>, errors: string[]): void {
         }
 
         // Check phi incoming blocks match predecessors
-        const incomingBlocks = new Set(inst.incoming.map(([block]) => block));
+        const phi = inst as Extract<Instruction, { kind: "phi" }>;
+        const incomingBlocks = new Set(phi.incoming.map((inc) => inc.block));
         const preds = new Set(block.predecessors);
 
         if (incomingBlocks.size !== preds.size) {
@@ -280,9 +271,9 @@ function checkPhiPlacement<T>(func: SSAFunction<T>, errors: string[]): void {
           );
         }
 
-        for (const [predBlock] of inst.incoming) {
-          if (!preds.has(predBlock)) {
-            errors.push(`Phi node in ${blockId} has incoming from ${predBlock} which is not a predecessor`);
+        for (const inc of phi.incoming) {
+          if (!preds.has(inc.block)) {
+            errors.push(`Phi node in ${blockId} has incoming from ${inc.block} which is not a predecessor`);
           }
         }
       } else {
@@ -295,7 +286,7 @@ function checkPhiPlacement<T>(func: SSAFunction<T>, errors: string[]): void {
 /**
  * Check basic block structure.
  */
-function checkBlockStructure<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkBlockStructure(func: SSAFunction, errors: string[]): void {
   // Check entry block exists
   if (!func.blocks.has(func.entry)) {
     errors.push(`Entry block ${func.entry} does not exist`);
@@ -336,58 +327,81 @@ function checkBlockStructure<T>(func: SSAFunction<T>, errors: string[]): void {
 /**
  * Check control flow is well-formed.
  */
-function checkControlFlow<T>(func: SSAFunction<T>, errors: string[]): void {
+function checkControlFlow(func: SSAFunction, errors: string[]): void {
   for (const [blockId, block] of func.blocks) {
     const term = block.terminator;
 
-    if (isJump(term)) {
-      if (block.successors.length !== 1) {
-        errors.push(`Block ${blockId} has jump but ${block.successors.length} successors`);
-      }
-      if (block.successors[0] !== term.target) {
-        errors.push(`Block ${blockId} jump target mismatch: ${term.target} vs ${block.successors[0]}`);
-      }
-    } else if (isBranch(term)) {
-      if (block.successors.length !== 2) {
-        errors.push(`Block ${blockId} has branch but ${block.successors.length} successors`);
-      }
-      if (!block.successors.includes(term.ifTrue)) {
-        errors.push(`Block ${blockId} branch ifTrue-target ${term.ifTrue} not in successors`);
-      }
-      if (!block.successors.includes(term.ifFalse)) {
-        errors.push(`Block ${blockId} branch ifFalse-target ${term.ifFalse} not in successors`);
-      }
-    } else if (isRet(term) || isUnreachable(term)) {
-      if (block.successors.length !== 0) {
-        errors.push(`Block ${blockId} has ${term.type} but ${block.successors.length} successors`);
-      }
+    switch (term.kind) {
+      case "jmp":
+        if (block.successors.length !== 1) {
+          errors.push(`Block ${blockId} has jmp but ${block.successors.length} successors`);
+        }
+        if (block.successors[0] !== term.target) {
+          errors.push(`Block ${blockId} jmp target mismatch: ${term.target} vs ${block.successors[0]}`);
+        }
+        break;
+
+      case "br":
+        if (block.successors.length !== 2) {
+          errors.push(`Block ${blockId} has br but ${block.successors.length} successors`);
+        }
+        if (!block.successors.includes(term.then)) {
+          errors.push(`Block ${blockId} br then-target ${term.then} not in successors`);
+        }
+        if (!block.successors.includes(term.else)) {
+          errors.push(`Block ${blockId} br else-target ${term.else} not in successors`);
+        }
+        break;
+
+      case "ret":
+      case "unreachable":
+        if (block.successors.length !== 0) {
+          errors.push(`Block ${blockId} has ${term.kind} but ${block.successors.length} successors`);
+        }
+        break;
     }
-    // User terminators: cannot validate
   }
 }
 
 // Helper functions
 
-function hasDefinition<T>(inst: Instruction<T>): inst is Instruction<T> & { id: ValueId } {
-  return typeof inst === "object" && inst !== null && "id" in inst && typeof inst.id === "string";
+function hasDefinition(inst: Instruction): inst is Instruction & { id: ValueId } {
+  return "id" in inst && typeof inst.id === "string";
 }
 
-function getInstructionUses<T>(inst: Instruction<T>): ValueId[] {
-  // Only phi nodes are recognized by the framework
-  if (isPhi(inst)) {
-    return inst.incoming.map(([_block, value]) => value);
+function getInstructionUses(inst: Instruction): ValueId[] {
+  switch (inst.kind) {
+    case "const":
+      return [];
+    case "binop":
+      return [inst.left, inst.right];
+    case "unop":
+      return [inst.operand];
+    case "call":
+      return inst.args;
+    case "phi":
+      return inst.incoming.map((inc) => inc.value);
+    case "load":
+      return [inst.addr];
+    case "store":
+      return [inst.addr, inst.value];
+    case "alloca":
+      return [];
+    default:
+      return [];
   }
-  // User instructions are opaque - cannot extract uses
-  return [];
 }
 
-function getTerminatorUses<T>(term: Terminator<T>): ValueId[] {
-  if (isBranch(term)) {
-    return [term.cond];
+function getTerminatorUses(term: Terminator): ValueId[] {
+  switch (term.kind) {
+    case "jmp":
+    case "unreachable":
+      return [];
+    case "br":
+      return [term.cond];
+    case "ret":
+      return term.value ? [term.value] : [];
+    default:
+      return [];
   }
-  if (isRet(term)) {
-    return term.value ? [term.value] : [];
-  }
-  // Other terminators: no uses or opaque
-  return [];
 }

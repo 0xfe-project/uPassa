@@ -52,7 +52,7 @@ export interface LoopInfo {
 /**
  * Detect all natural loops in the function.
  */
-export function detectLoops(func: SSAFunction, domTree: DomTree): LoopInfo {
+export function detectLoops<T>(func: SSAFunction<T>, domTree: DomTree): LoopInfo {
   const loops = new Map<number, Loop>();
   const blockToLoop = new Map<BlockId, number>();
   const headers = new Set<BlockId>();
@@ -124,7 +124,7 @@ export function detectLoops(func: SSAFunction, domTree: DomTree): LoopInfo {
   // Step 3: Find loop exits
   for (const loop of loops.values()) {
     for (const blockId of loop.blocks) {
-      const block = func.blocks.get(blockId);
+      const block = func.blocks.get(blockId) as BasicBlock<T> | undefined;
       if (!block) continue;
 
       for (const succ of block.successors) {
@@ -146,7 +146,7 @@ export function detectLoops(func: SSAFunction, domTree: DomTree): LoopInfo {
  *
  * Algorithm: work backwards from latch to header, collecting all blocks.
  */
-function findLoopBlocks(func: SSAFunction, header: BlockId, latch: BlockId): Set<BlockId> {
+function findLoopBlocks<T>(func: SSAFunction<T>, header: BlockId, latch: BlockId): Set<BlockId> {
   const blocks = new Set<BlockId>([header, latch]);
   const worklist = [latch];
 
