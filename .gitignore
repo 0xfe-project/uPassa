@@ -2,17 +2,16 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# 只读参考材料：上游 nanopass 框架的 clone。不是我们的，也不该随仓库分发。
+# Read-only reference material: an upstream clone of the nanopass framework.
+# Not ours, and should not be distributed with the repo.
 refs/*
 
-# e2e 的中间结果（codegen 生成的代码、每步的 AST）是**提交的** ——
-# 看得见生成物、能在 diff 里看到 codegen 的变化，这是刻意的。
-# 这个块只放临时产物。
+# Temporary artifacts.
 *.log
 .DS_Store
 
-# agent session state
+# Agent session state
 .eta/
 
-# t24 的复现脚本（故意是红的，不该进仓库，也不在 pnpm check 的 include 里）
+# Reproduction scripts (deliberately red; not in `pnpm check`'s include)
 scratch/

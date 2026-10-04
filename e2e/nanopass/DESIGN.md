@@ -1,72 +1,71 @@
-# Nanopass Language Chain Design
+# Nanopass language chain design
 
-## 目标
+## Purpose
 
-测试 nanopass 框架的核心功能：
-- 语言定义 (`language()`)
-- 语言派生 (`derive()`)
-- Pass 转换 (`pass()`)
-- 模式匹配和遍历
+Exercises the core nanopass features:
+- Language declarations (`language()`)
+- Derivation (`derive()`)
+- Pass declarations (`pass()`)
+- Traversal and pattern matching
 
-## 语言链
+## The chain
 
 ```
-L0 (源语言)
-  ↓ [desugar-let]
-L1 (移除 let，只保留 lambda)
-  ↓ [explicit-refs]
-L2 (引用显式化)
-  ↓ [flatten]
-L3 (扁平化表达式)
+L0  source language
+ ↓  [desugar-let]
+L1  let removed, lambda application only
+ ↓  [explicit-refs]
+L2  references explicit, with binding depth
+ ↓  [flatten]
+L3  flattened expressions (temporaries)
 ```
 
-### L0: 源语言
+The full chain (declared in `languages.ts`) continues to L10: free-variable
+analysis, boxing, closure conversion, lambda lifting, explicit control flow,
+basic blocks, and a final instruction form. Only L0–L3 have implemented passes.
 
-包含：
-- 变量 `(var name)`
-- lambda `(lambda (param) body)`
-- 应用 `(app func arg)`
-- let 绑定 `(let ([name val]) body)`
-- 算术 `(+ a b)`, `(* a b)`
-- 字面量 `(int n)`
+### L0: source
 
-### L1: 去糖后
+- `Int` literal
+- `Var` reference
+- `Lambda` (`param`, `body`)
+- `App` (`func`, `arg`)
+- `Let` (`name`, `val`, `body`)
+- `Add`, `Mul`
 
-移除 `let`，转换为 lambda 应用：
-```scheme
-(let ([x 1]) body)
-=>
-((lambda (x) body) 1)
+### L1: after desugaring
+
+`let` is removed, rewritten to a lambda application:
+
+```
+(let ([x 1]) body)  =>  ((lambda (x) body) 1)
 ```
 
-### L2: 引用显式化
+### L2: explicit references
 
-为每个变量引用添加绑定深度信息：
-```scheme
-(var name)
-=>
-(ref name depth)
+Every variable reference carries its binding depth:
+
+```
+Var{name}  =>  Ref{name, depth}
 ```
 
-### L3: 扁平化
+### L3: flattened
 
-将嵌套表达式提取为 let 绑定：
-```scheme
-(+ (+ 1 2) 3)
-=>
-(let ([t1 (+ 1 2)])
-  (+ t1 3))
+Nested expressions are hoisted into temporaries:
+
+```
+(+ (+ 1 2) 3)  =>  Seq{ bindings: [Temp{0, (+ 1 2)}], result: (+ t0 3) }
 ```
 
-## 测试计划
+## Test plan
 
-1. **语言定义测试**：验证每个语言的类型定义正确
-2. **派生测试**：验证 `derive()` 正确继承和修改
-3. **Pass 测试**：验证每个 pass 的转换正确
-4. **端到端测试**：完整的链式转换
+1. Language declarations type-check
+2. `derive()` inherits and modifies correctly
+3. Each pass transforms correctly
+4. The composed pipeline runs end to end
 
-## 实现顺序
+## Implementation order
 
-1. 定义 L0-L3 语言 (t16)
-2. 实现 passes (t17)
-3. 编写测试 (t18-t20)
+1. Declare L0–L3 (`languages.ts`) — done
+2. Implement passes (`passes.ts`) — done
+3. Compose and test (`pipeline.ts`, `example.ts`, tests) — done
