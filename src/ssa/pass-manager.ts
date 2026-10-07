@@ -166,7 +166,9 @@ export class PassManager<T = never> {
       }
     }
 
-    if (iteration >= this.config.maxIterations) {
+    // Only a warning when it actually stopped changing things: the loop also exits when a round
+    // changed nothing, and that is convergence, not exhaustion.
+    if (anyChanged && iteration >= this.config.maxIterations) {
       console.warn(`[PassManager] Reached max iterations (${this.config.maxIterations}) without convergence`);
     }
   }

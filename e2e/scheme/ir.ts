@@ -175,6 +175,28 @@ export const schemeOps: SSAOps<SchemeNode> = {
   successors: () => [],
 };
 
+/**
+ * True for a `copy` — the only instruction whose whole job is to name another value.
+ *
+ * The parameter is any tagged node rather than `SchemeNode`, because a caller walking a block sees
+ * `Instruction<SchemeNode>`, which also includes the framework's phi.
+ */
+export function isCopy(n: { type: string }): n is { type: "copy"; dest: ValueId; src: ValueId } {
+  return n.type === "copy";
+}
+
+/**
+ * True when discarding the instruction changes nothing observable.
+ *
+ * `call` is not pure: the callee may print. `print` and `global-set` are effects themselves.
+ * Everything else computes a value, allocates one, or names one — and an unused value is not an
+ * effect. Allocation counts as pure here because dropping an allocation nobody reads is exactly
+ * what the benchmarks want to see.
+ */
+export function isPure(n: { type: string }): boolean {
+  return n.type !== "print" && n.type !== "global-set" && n.type !== "call" && n.type !== "tailcall";
+}
+
 /** The op tag of a `prim`, for passes that care about the operator. */
 export function primOp(n: SchemeNode): PrimOp | undefined {
   return n.type === "prim" ? n.op : undefined;

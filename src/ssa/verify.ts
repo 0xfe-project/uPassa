@@ -3,10 +3,16 @@
  *
  * Checks that a function is well-formed SSA:
  * - every value is defined exactly once
- * - every use has a definition
  * - definitions dominate their uses (phi operands may come from the predecessor edge)
  * - phis sit at merge points, and their operands match the predecessors
  * - block edges agree with the terminators
+ *
+ * "Every use has a definition" is deliberately **not** checked. A name the function never defines
+ * is external — a parameter, a frame slot, a global — and the framework cannot tell that from a
+ * typo. Requiring phi operands to be defined in the function looked like a safe half of it, and is
+ * not: a phi that merges two parameters has operands the function never defines, and is correct.
+ * What is checkable is structural, and `checkPhiPlacement` checks it: an operand per predecessor,
+ * no duplicates, phis first in their block, and a merge point that actually merges.
  *
  * Run it after every pass. A pass that produces a well-formed tree but invalid SSA is the kind of
  * bug that otherwise surfaces three passes later as a wrong answer.
@@ -64,7 +70,6 @@ export function verifySSA<T>(func: SSAFunction<T>, ops: SSAOps<T>): void {
 
     checkReachability(ctx);
     checkUniqueDefs(ctx);
-    checkPhiOperandsDefined(ctx);
     const domTree = buildDomTree(func);
     checkDominance(ctx, domTree);
     checkPhiPlacement(ctx);
@@ -166,29 +171,6 @@ function checkUniqueDefs<T>(ctx: Ctx<T>): void {
  * nothing defines means the merge is broken. (A phi over a free name would have the same operand on
  * every edge, and would already have been dropped as trivial.)
  */
-function checkPhiOperandsDefined<T>(ctx: Ctx<T>): void {
-  const { func, ops, errors } = ctx;
-
-  const defined = new Set<ValueId>();
-  for (const block of func.blocks.values()) {
-    for (const inst of block.instructions) {
-      const d = defOf(inst, ops);
-      if (d !== undefined) defined.add(d);
-    }
-  }
-
-  for (const [blockId, block] of func.blocks) {
-    for (const inst of block.instructions) {
-      if (!isPhi(inst)) continue;
-      for (const [predBlock, value] of inst.incoming) {
-        if (!defined.has(value)) {
-          errors.push(`phi in ${blockId} takes ${value} from ${predBlock}, but nothing defines ${value}`);
-        }
-      }
-    }
-  }
-}
-
 function checkDominance<T>(ctx: Ctx<T>, domTree: DomTree): void {
   const { func, ops, errors } = ctx;
 

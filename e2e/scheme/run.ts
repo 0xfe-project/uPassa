@@ -8,6 +8,7 @@
 import { toSSA } from "../../src/ssa/braun.ts";
 import { verifySSASafe } from "../../src/ssa/verify.ts";
 import { compile } from "./pipeline.ts";
+import { optimizeModule, type OptimizeStats } from "./optimize.ts";
 import { lower, type LoweredProgram } from "./lower.ts";
 import { run, type RunOptions, type RunResult, type Value } from "./interp.ts";
 import { schemeOps, type SchemeNode } from "./ir.ts";
@@ -19,6 +20,10 @@ export interface CompileOptions {
   readonly fuse?: boolean;
   /** Build SSA before running. Default true — the benchmarks measure the optimized shape. */
   readonly ssa?: boolean;
+  /** Run the SSA optimization passes. Default false, so tests can compare the two. */
+  readonly optimize?: boolean;
+  /** Verify the IR after every optimization pass. Slow. */
+  readonly verifyEach?: boolean;
 }
 
 export interface CompiledProgram {
@@ -27,6 +32,8 @@ export interface CompiledProgram {
   /** What the interpreter actually executes: the SSA functions when `ssa` is on. */
   readonly module: Map<string, SSAFunction<SchemeNode>>;
   readonly entry: string;
+  /** Present only when `optimize` was on. */
+  readonly optimizeStats?: OptimizeStats | undefined;
 }
 
 export function compileProgram(source: string, opts: CompileOptions = {}): CompiledProgram {
@@ -47,7 +54,10 @@ export function compileProgram(source: string, opts: CompileOptions = {}): Compi
     }
     module.set(name, ssa);
   }
-  return { tree, lowered, module, entry: lowered.entry };
+  const optimizeStats =
+    opts.optimize === true ? optimizeModule(module, { verifyEach: opts.verifyEach ?? false }) : undefined;
+
+  return { tree, lowered, module, entry: lowered.entry, optimizeStats };
 }
 
 /** Compile and run, returning the value, the printed output, and the counters. */

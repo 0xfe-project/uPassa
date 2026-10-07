@@ -383,28 +383,32 @@ describe("braun: the verifier rejects broken SSA", () => {
     expect(() => verifySSA(f, testOps)).toThrow(/defined twice/);
   });
 
-  it("catches a phi operand that nothing defines", () => {
+  it("catches a phi that is missing an operand for one of its predecessors", () => {
+    // What is checkable about a phi is structural. Whether an operand is *defined* is not: a phi
+    // that merges two parameters has operands the function never defines, and is correct.
     const f = fn("entry", [
       block("entry", [], { type: "branch", cond: "c", ifTrue: "a", ifFalse: "b" }),
       block("a", [{ type: "const", dest: "x", value: 1 }], { type: "jump", target: "join" }),
-      block("b", [{ type: "const", dest: "x", value: 2 }], { type: "jump", target: "join" }),
-      block(
-        "join",
-        [
-          {
-            type: "phi",
-            dest: "p",
-            incoming: [
-              ["a", "x"],
-              ["b", "ghost"],
-            ],
-          },
-        ],
-        { type: "ret", value: "p" },
-      ),
+      block("b", [{ type: "const", dest: "y", value: 2 }], { type: "jump", target: "join" }),
+      block("join", [{ type: "phi", dest: "p", incoming: [["a", "x"]] }], {
+        type: "ret",
+        value: "p",
+      }),
     ]);
 
-    expect(() => verifySSA(f, testOps)).toThrow(/nothing defines ghost/);
+    expect(() => verifySSA(f, testOps)).toThrow(/missing an operand from predecessor b/);
+  });
+
+  it("catches a phi in a block that does not merge anything", () => {
+    const f = fn("entry", [
+      block("entry", [{ type: "const", dest: "x", value: 1 }], { type: "jump", target: "next" }),
+      block("next", [{ type: "phi", dest: "p", incoming: [["entry", "x"]] }], {
+        type: "ret",
+        value: "p",
+      }),
+    ]);
+
+    expect(() => verifySSA(f, testOps)).toThrow(/1 predecessor/);
   });
 
   it("allows an operand the function never defines (a parameter or global)", () => {
