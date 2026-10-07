@@ -30,6 +30,19 @@ export type PrimInstr = { type: "prim"; dest: ValueId; op: PrimOp; args: ValueId
 
 export type SchemeInstr =
   | { type: "const"; dest: ValueId; value: number | boolean }
+  /** The value of a form that is evaluated for effect only. Its own node so it is never a number. */
+  | { type: "void"; dest: ValueId }
+  /**
+   * `dest := src`.
+   *
+   * Needed because a value produced in two places — the two arms of an `if` — has to be named the
+   * same thing in both, so that the SSA construction can see one variable with two definitions and
+   * put a phi where they meet. An arm whose value is already a name still needs the copy, because
+   * the *name* is what carries the merge, not the instruction that produced it.
+   *
+   * Copy propagation removes these. They are in the IR on purpose, not as an artifact.
+   */
+  | { type: "copy"; dest: ValueId; src: ValueId }
   /** The empty list. Its own node rather than a special const, so it cannot be confused with a number. */
   | { type: "nil"; dest: ValueId }
   /** `(op a b)` — the only binary node, so `def`/`uses` do not have to grow per operator. */
@@ -54,6 +67,12 @@ export type SchemeInstr =
   | { type: "closure-ref"; dest: ValueId; closure: ValueId; index: number }
   /** A non-tail call: it returns a value. `callee` is a `func-ref` or a closure. */
   | { type: "call"; dest: ValueId; callee: ValueId; args: ValueId[] }
+  /**
+   * A top-level binding that is not a function. Globals live outside every frame, so they need
+   * their own read and write rather than being smuggled through the calling convention.
+   */
+  | { type: "global-set"; name: string; value: ValueId }
+  | { type: "global-ref"; dest: ValueId; name: string }
   /** Write a value to the output. No destination. */
   | { type: "print"; value: ValueId };
 
@@ -76,9 +95,12 @@ export const schemeOps: SSAOps<SchemeNode> = {
   uses: (n) => {
     switch (n.type) {
       case "const":
+      case "void":
       case "nil":
       case "func-ref":
         return [];
+      case "copy":
+        return [n.src];
       case "prim":
         return n.args;
       case "cons":
@@ -93,6 +115,10 @@ export const schemeOps: SSAOps<SchemeNode> = {
       case "call":
       case "tailcall":
         return [n.callee, ...n.args];
+      case "global-set":
+        return [n.value];
+      case "global-ref":
+        return [];
       case "print":
         return [n.value];
     }
@@ -106,8 +132,13 @@ export const schemeOps: SSAOps<SchemeNode> = {
     const swap = (v: ValueId): ValueId => (v === from ? to : v);
     switch (n.type) {
       case "const":
+      case "void":
       case "nil":
       case "func-ref":
+      case "global-ref":
+        break;
+      case "copy":
+        n.src = swap(n.src);
         break;
       case "prim":
         n.args = n.args.map(swap);
@@ -130,6 +161,9 @@ export const schemeOps: SSAOps<SchemeNode> = {
       case "tailcall":
         n.callee = swap(n.callee);
         n.args = n.args.map(swap);
+        break;
+      case "global-set":
+        n.value = swap(n.value);
         break;
       case "print":
         n.value = swap(n.value);

@@ -23,7 +23,7 @@
  *
  * ── The chain
  *
- *   S0   surface: define, lambda, let, let*, cond, and, or, not, when, unless, begin
+ *   S0   surface: define, lambda, let, let*, cond, and, or, not, when, unless, begin, ()
  *    |   desugar-def-fun        DefFun -> DefVal holding a Lambda
  *   S1
  *    |   remove-when-unless     when/unless -> if
@@ -41,7 +41,7 @@
  *    |   alpha-rename           every binder gets a unique name
  *   S8
  *    |   normalize-let          n bindings -> n nested one-binding lets
- *   S9   core: int, bool, void, var, let, lambda, app, if
+ *   S9   core: int, bool, void, (), var, let, lambda, app, if, prim
  *    |   resolve-primitives     known operator names -> prim nodes
  *   S10
  *    |   uncover-free           each lambda records its free variables
@@ -78,6 +78,8 @@ export const S0 = language({
     Expr: {
       Int: { value: "number" },
       Bool: { value: "boolean" },
+      /** The empty list. Surface syntax, so it is here from the start. */
+      Nil: {},
       Var: { name: "string" },
       Lambda: { params: list("string"), body: "Expr" },
       App: { func: "Expr", args: list("Expr") },

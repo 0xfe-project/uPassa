@@ -118,6 +118,8 @@ class Interp {
   private readonly module: Module;
   private readonly stats: Stats = { instructions: 0, allocs: 0, calls: 0, tailcalls: 0 };
   private readonly output: string[] = [];
+  /** Top-level bindings that are not functions. Shared by every frame. */
+  private readonly globals = new Map<string, Value>();
   private readonly maxSteps: number;
   private steps = 0;
 
@@ -242,8 +244,8 @@ class Interp {
         );
       }
 
-      // `print` is the one instruction with no destination.
-      if (inst.type === "print") {
+      // `print` and `global-set` are the instructions with no destination.
+      if (inst.type === "print" || inst.type === "global-set") {
         this.evalInstr(fn, values, inst);
         continue;
       }
@@ -271,6 +273,12 @@ class Interp {
     switch (inst.type) {
       case "const":
         return typeof inst.value === "boolean" ? V_BOOL(inst.value) : V_INT(inst.value);
+
+      case "void":
+        return V_VOID;
+
+      case "copy":
+        return this.get(values, inst.src, fn);
 
       case "nil":
         return V_NIL;
@@ -316,6 +324,19 @@ class Interp {
         const target = this.resolveCallee(inst.callee, values);
         const argv = inst.args.map((a) => this.get(values, a, fn));
         return this.run(target.fn, argv, target.free);
+      }
+
+      case "global-set": {
+        this.globals.set(inst.name, this.get(values, inst.value, fn));
+        return V_VOID;
+      }
+
+      case "global-ref": {
+        const v = this.globals.get(inst.name);
+        if (v === undefined) {
+          throw new SchemeRuntimeError(`global ${inst.name} was read before it was set`);
+        }
+        return v;
       }
 
       case "print": {

@@ -80,6 +80,9 @@ export function toExpr(e: SExpr): S0_Expr {
 
   // `e` is a list from here on.
   const form: Extract<SExpr, { kind: "list" }> = e;
+  // `()` is the empty list itself, not an application of nothing.
+  if (form.items.length === 0) return { type: "Nil" } as unknown as S0_Expr;
+
   const op = head(form);
   const args = form.items.slice(1);
 
