@@ -1,306 +1,410 @@
 /**
- * Braun et al.'s SSA construction algorithm (generic)
+ * Braun et al.'s SSA construction.
  *
- * Reference: "Simple and Efficient Construction of Static Single Assignment Form"
+ * "Simple and Efficient Construction of Static Single Assignment Form"
  * https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
  *
- * This algorithm places phi nodes lazily during variable renaming, without
- * computing dominance frontiers upfront.
+ * Phi nodes are placed lazily while renaming, so dominance frontiers never have to be computed.
  *
- * Generic over T: user-provided instruction and terminator types flow through.
- * The framework only inserts phi nodes (minimal IR); user instructions pass through.
+ * ── Shape
+ *
+ * One shape in, the same shape out: `SSAFunction<T>`. Operands are **variable names** on the way in
+ * and **SSA value names** on the way out; the framework does not distinguish them, it just renames.
+ *
+ *   toSSA(fn, ops): SSAFunction<T> -> SSAFunction<T>
+ *
+ * The framework reads and rewrites operands of your nodes through `SSAOps<T>`. Its own nodes (phi,
+ * jump, branch, ret, unreachable) it handles itself.
+ *
+ * ── What the framework assumes
+ *
+ * - Every node has a `type` field, and none of your tags collide with the reserved ones.
+ * - Instructions are **ordered**. This is what makes `x = 1; x = 2` in one block two different SSA
+ *   values, and what makes `x = x + 1` read the old `x`. A block is not a set of assignments.
+ * - A read that no definition reaches stands for itself. That is how function parameters and
+ *   globals pass through: the framework does not model either.
+ *
+ * ── Names
+ *
+ * Fresh names are `%0`, `%1`, ... The framework reserves the `%` prefix. It seeds its counter from
+ * the names already present in the function, so it will not collide with yours even if you use `%`.
  */
 
-import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId, PhiNode } from "./ir.ts";
+import type {
+  SSAFunction,
+  BasicBlock,
+  Instruction,
+  Terminator,
+  ValueId,
+  BlockId,
+  PhiNode,
+  SSAOps,
+} from "./ir.ts";
+import {
+  isPhi,
+  isBranch,
+  isRet,
+  isJump,
+  isUnreachable,
+  getSuccessors,
+  defOf,
+  usesOf,
+  terminatorUses,
+  rewriteUses,
+  rewriteTerminatorUses,
+} from "./ir.ts";
 
 export class BraunError extends Error {}
 
-/**
- * Input to Braun: the function before phi insertion, with variable names as operands.
- * Generic over T: user's instruction/terminator types.
- */
-export interface PreSSABlock<T> {
-  id: BlockId;
-  // Variable assignments in this block: name -> value expression
-  assignments: Map<string, PreSSAValue<T>>;
-  terminator: PreSSATerminator<T>;
-  predecessors: BlockId[];
+/** A node that can read a value: an instruction or a terminator. */
+type Use<T> = { kind: "inst"; node: Instruction<T> } | { kind: "term"; node: Terminator<T> };
+
+export function toSSA<T>(fn: SSAFunction<T>, ops: SSAOps<T>): SSAFunction<T> {
+  return new Braun<T>(fn, ops).run();
 }
 
-/**
- * Pre-SSA value: either a variable reference or a user-defined expression.
- * Variable references will be renamed to SSA values by Braun.
- * User expressions (T) flow through unchanged.
- */
-export type PreSSAValue<T> = { kind: "var"; name: string } | { kind: "expr"; value: T };
+class Braun<T> {
+  private readonly fn: SSAFunction<T>;
+  private readonly ops: SSAOps<T>;
 
-/**
- * Pre-SSA terminator: variable names not yet renamed.
- * Generic over T: user can provide custom terminator types.
- */
-export type PreSSATerminator<T> =
-  | { kind: "jump"; target: BlockId }
-  | { kind: "branch"; cond: string; ifTrue: BlockId; ifFalse: BlockId }
-  | { kind: "ret"; value?: string }
-  | { kind: "user"; term: T };
+  /** Edges, computed from terminators (the blocks' own fields are written back from these). */
+  private readonly succs = new Map<BlockId, BlockId[]>();
+  private readonly preds = new Map<BlockId, BlockId[]>();
 
-export interface PreSSAFunction<T> {
-  id: string;
-  blocks: Map<BlockId, PreSSABlock<T>>;
-  entry: BlockId;
-}
-
-/**
- * Braun algorithm state
- */
-class BraunBuilder<T> {
-  private readonly preFunc: PreSSAFunction<T>;
-  private readonly blocks: Map<BlockId, BasicBlock<T>> = new Map();
-
-  // Block-local definitions: block -> variable -> SSA value ID
-  private readonly blockDefs = new Map<BlockId, Map<string, ValueId>>();
-
-  // Incomplete phi nodes: block -> variable -> phi instruction index
-  private readonly incompletePhis = new Map<BlockId, Map<string, number>>();
-
-  // Sealed blocks (all predecessors known)
   private readonly sealed = new Set<BlockId>();
+  private readonly processed = new Set<BlockId>();
 
-  // Value ID counter
-  private valueCounter = 0;
+  /** block -> variable -> the value that reads of `variable` resolve to at this point in the block */
+  private readonly blockDefs = new Map<BlockId, Map<ValueId, ValueId>>();
 
-  constructor(preFunc: PreSSAFunction<T>) {
-    this.preFunc = preFunc;
+  /** block -> variable -> phi still awaiting operands, because the block is not sealed yet */
+  private readonly incomplete = new Map<BlockId, Map<ValueId, PhiNode>>();
 
-    // Initialize SSA blocks
-    for (const [id, preBlock] of preFunc.blocks) {
-      const successors = this.getSuccessors(preBlock.terminator);
-      this.blocks.set(id, {
-        id,
-        instructions: [],
-        terminator: { type: "unreachable" } as Terminator<T>,
-        predecessors: preBlock.predecessors,
-        successors,
-      });
-      this.blockDefs.set(id, new Map());
+  /** block -> phis created for it, in creation order. Prepended to the instruction list at the end. */
+  private readonly phis = new Map<BlockId, PhiNode[]>();
+
+  /** Which block each phi lives in, so a removed phi can be dropped from that block's list. */
+  private readonly phiBlock = new Map<PhiNode, BlockId>();
+
+  /** value -> nodes that read it. Needed to rewire uses when a trivial phi is deleted. */
+  private readonly users = new Map<ValueId, Use<T>[]>();
+
+  /** Names already present, so generated names cannot collide. */
+  private readonly taken = new Set<ValueId>();
+  private counter = 0;
+
+  constructor(fn: SSAFunction<T>, ops: SSAOps<T>) {
+    this.fn = fn;
+    this.ops = ops;
+    this.collectNames();
+    this.buildEdges();
+  }
+
+  // ───────────────────────── Setup ─────────────────────────
+
+  private collectNames(): void {
+    for (const block of this.fn.blocks.values()) {
+      for (const inst of block.instructions) {
+        const d = defOf(inst, this.ops);
+        if (d !== undefined) this.taken.add(d);
+        for (const u of usesOf(inst, this.ops)) this.taken.add(u);
+      }
+      for (const u of terminatorUses(block.terminator, this.ops)) this.taken.add(u);
     }
   }
 
-  private freshValue(): ValueId {
-    return `%${this.valueCounter++}`;
-  }
-
-  private getSuccessors(term: PreSSATerminator<T>): BlockId[] {
-    switch (term.kind) {
-      case "jump":
-        return [term.target];
-      case "branch":
-        return [term.ifTrue, term.ifFalse];
-      case "ret":
-      case "user":
-        return [];
+  private freshName(): ValueId {
+    for (;;) {
+      const name = `%${this.counter++}`;
+      if (!this.taken.has(name)) {
+        this.taken.add(name);
+        return name;
+      }
     }
   }
 
   /**
-   * Read variable at current position (core of Braun algorithm).
+   * Derive the edges from terminators, and write them back onto the blocks.
+   *
+   * Terminators are the source of truth: a block's `predecessors`/`successors` fields are an
+   * artifact of the graph, not an input. Recomputing them means the caller does not have to keep
+   * them consistent, and they cannot go stale.
    */
-  private readVariable(variable: string, block: BlockId): ValueId {
-    const localDef = this.blockDefs.get(block)?.get(variable);
-    if (localDef !== undefined) {
-      return localDef;
+  private buildEdges(): void {
+    for (const block of this.fn.blocks.values()) {
+      const succs = getSuccessors(block.terminator, this.ops);
+      this.succs.set(block.id, succs);
+      if (!this.preds.has(block.id)) this.preds.set(block.id, []);
     }
+    for (const block of this.fn.blocks.values()) {
+      for (const s of this.succs.get(block.id) ?? []) {
+        const list = this.preds.get(s);
+        if (list === undefined) {
+          throw new BraunError(`block ${block.id} jumps to ${s}, which does not exist`);
+        }
+        list.push(block.id);
+      }
+    }
+    for (const block of this.fn.blocks.values()) {
+      block.successors = [...(this.succs.get(block.id) ?? [])];
+      block.predecessors = [...(this.preds.get(block.id) ?? [])];
+    }
+  }
+
+  /** Reverse postorder from the entry, over reachable blocks. */
+  private computeRPO(): BlockId[] {
+    const visited = new Set<BlockId>();
+    const post: BlockId[] = [];
+    const stack: Array<{ id: BlockId; i: number }> = [{ id: this.fn.entry, i: 0 }];
+    visited.add(this.fn.entry);
+
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]!;
+      const succs = this.succs.get(top.id) ?? [];
+      if (top.i < succs.length) {
+        const next = succs[top.i++]!;
+        if (!visited.has(next) && this.fn.blocks.has(next)) {
+          visited.add(next);
+          stack.push({ id: next, i: 0 });
+        }
+      } else {
+        post.push(top.id);
+        stack.pop();
+      }
+    }
+
+    return post.reverse();
+  }
+
+  // ───────────────────────── Driver ─────────────────────────
+
+  run(): SSAFunction<T> {
+    if (!this.fn.blocks.has(this.fn.entry)) {
+      throw new BraunError(`entry block ${this.fn.entry} does not exist`);
+    }
+
+    // Walk in reverse postorder. Seal a block as soon as every predecessor has been processed —
+    // sealing early is what keeps the algorithm from creating phis it does not need.
+    const rpo = this.computeRPO();
+    for (const id of rpo) {
+      this.processBlock(id);
+      this.processed.add(id);
+      const preds = this.preds.get(id) ?? [];
+      if (preds.every((p) => this.processed.has(p))) this.sealBlock(id);
+    }
+
+    // Anything still unsealed (a back edge from a block we reached later, say).
+    for (const id of rpo) {
+      if (!this.sealed.has(id)) this.sealBlock(id);
+    }
+
+    // Phis are required to come first in a block; collect them now rather than splicing as we go.
+    for (const [id, phis] of this.phis) {
+      if (phis.length === 0) continue;
+      const block = this.fn.blocks.get(id);
+      if (block) block.instructions = [...phis, ...block.instructions];
+    }
+
+    return this.fn;
+  }
+
+  private processBlock(id: BlockId): void {
+    const block = this.fn.blocks.get(id);
+    if (!block) return;
+
+    for (const inst of block.instructions) {
+      if (isPhi(inst)) continue; // ours; already consistent
+      this.renameInstruction(inst, id);
+    }
+
+    this.renameTerminator(block, id);
+  }
+
+  /**
+   * Rename one instruction's operands, then its destination.
+   *
+   * Order matters. For `x = x + 1` the read of `x` must resolve to the version from *before* this
+   * instruction, so every read is rewritten first and only then is the destination renamed.
+   */
+  private renameInstruction(inst: Instruction<T>, block: BlockId): void {
+    // Snapshot: rewriting changes the node, so reading uses while rewriting would be a moving target.
+    const reads = [...usesOf(inst, this.ops)];
+    for (const v of reads) {
+      const renamed = this.readVariable(v, block);
+      if (renamed !== v) rewriteUses(inst, this.ops, v, renamed);
+    }
+    for (const v of usesOf(inst, this.ops)) this.addUser(v, { kind: "inst", node: inst });
+
+    const defined = defOf(inst, this.ops);
+    if (defined === undefined) return;
+
+    const fresh = this.freshName();
+    this.ops.setDef(inst as T, fresh);
+    this.writeVariable(defined, block, fresh);
+  }
+
+  private renameTerminator(block: BasicBlock<T>, id: BlockId): void {
+    const term = block.terminator;
+    const reads = [...terminatorUses(term, this.ops)];
+    for (const v of reads) {
+      const renamed = this.readVariable(v, id);
+      if (renamed !== v) rewriteTerminatorUses(term, this.ops, v, renamed);
+    }
+    for (const v of terminatorUses(term, this.ops)) this.addUser(v, { kind: "term", node: term });
+  }
+
+  // ───────────────────────── Renaming ─────────────────────────
+
+  private readVariable(variable: ValueId, block: BlockId): ValueId {
+    const local = this.blockDefs.get(block)?.get(variable);
+    if (local !== undefined) return local;
     return this.readVariableRecursive(variable, block);
   }
 
-  private readVariableRecursive(variable: string, block: BlockId): ValueId {
-    const ssaBlock = this.blocks.get(block);
-    if (!ssaBlock) {
-      throw new BraunError(`Block ${block} not found`);
+  private readVariableRecursive(variable: ValueId, block: BlockId): ValueId {
+    const preds = this.preds.get(block) ?? [];
+    let value: ValueId;
+
+    if (!this.sealed.has(block)) {
+      // Not all predecessors are known yet, so the phi's operands cannot be filled in. Create it
+      // incomplete; sealing will complete it.
+      value = this.addIncompletePhi(variable, block);
+    } else if (preds.length === 1) {
+      // A single predecessor needs no phi — just read through.
+      value = this.readVariable(variable, preds[0]!);
+    } else if (preds.length === 0) {
+      // No definition reaches this block along any path, so the name stands for itself.
+      // This is how parameters and globals pass through; the framework models neither.
+      value = variable;
+    } else {
+      value = this.addPhi(variable, block);
     }
 
-    const val: ValueId = !this.sealed.has(block)
-      ? this.addIncompletePhi(variable, block)
-      : ssaBlock.predecessors.length === 1
-        ? this.readVariable(variable, ssaBlock.predecessors[0]!)
-        : this.addPhi(variable, block);
-
-    this.writeVariable(variable, block, val);
-    return val;
+    this.writeVariable(variable, block, value);
+    return value;
   }
 
-  private writeVariable(variable: string, block: BlockId, value: ValueId): void {
+  private writeVariable(variable: ValueId, block: BlockId, value: ValueId): void {
     let defs = this.blockDefs.get(block);
-    if (!defs) {
+    if (defs === undefined) {
       defs = new Map();
       this.blockDefs.set(block, defs);
     }
     defs.set(variable, value);
   }
 
-  private addPhi(variable: string, block: BlockId): ValueId {
-    const ssaBlock = this.blocks.get(block);
-    if (!ssaBlock) {
-      throw new BraunError(`Block ${block} not found`);
-    }
-
-    const phiId = this.freshValue();
-    const incoming: Array<readonly [BlockId, ValueId]> = [];
-
-    for (const pred of ssaBlock.predecessors) {
-      const value = this.readVariable(variable, pred);
-      incoming.push([pred, value] as const);
-    }
-
-    const phi: Instruction = {
-      type: "phi",
-      dest: phiId,
-      incoming,
-    };
-
-    ssaBlock.instructions.unshift(phi);
-    return phiId;
+  private addPhi(variable: ValueId, block: BlockId): ValueId {
+    const phi: PhiNode = { type: "phi", dest: this.freshName(), incoming: [] };
+    this.recordPhi(block, phi);
+    this.fillPhi(phi, variable, block);
+    return this.tryRemoveTrivialPhi(phi) ?? phi.dest;
   }
 
-  private addIncompletePhi(variable: string, block: BlockId): ValueId {
-    const phiId = this.freshValue();
-    const phi: Instruction<T> = {
-      type: "phi",
-      dest: phiId,
-      incoming: [],
-    };
+  private addIncompletePhi(variable: ValueId, block: BlockId): ValueId {
+    const phi: PhiNode = { type: "phi", dest: this.freshName(), incoming: [] };
+    this.recordPhi(block, phi);
 
-    const ssaBlock = this.blocks.get(block);
-    if (!ssaBlock) {
-      throw new BraunError(`Block ${block} not found`);
+    let byVariable = this.incomplete.get(block);
+    if (byVariable === undefined) {
+      byVariable = new Map();
+      this.incomplete.set(block, byVariable);
     }
+    byVariable.set(variable, phi);
 
-    const phiIndex = ssaBlock.instructions.length;
-    ssaBlock.instructions.push(phi);
+    return phi.dest;
+  }
 
-    let blockPhis = this.incompletePhis.get(block);
-    if (!blockPhis) {
-      blockPhis = new Map();
-      this.incompletePhis.set(block, blockPhis);
+  private fillPhi(phi: PhiNode, variable: ValueId, block: BlockId): void {
+    for (const pred of this.preds.get(block) ?? []) {
+      const value = this.readVariable(variable, pred);
+      phi.incoming.push([pred, value]);
+      this.addUser(value, { kind: "inst", node: phi });
     }
-    blockPhis.set(variable, phiIndex);
-
-    return phiId;
   }
 
   private sealBlock(block: BlockId): void {
-    const blockPhis = this.incompletePhis.get(block);
-    if (blockPhis) {
-      for (const [variable, phiIndex] of blockPhis) {
-        this.fillIncompletePhi(variable, block, phiIndex);
+    const byVariable = this.incomplete.get(block);
+    if (byVariable !== undefined) {
+      for (const [variable, phi] of byVariable) {
+        this.fillPhi(phi, variable, block);
+        this.tryRemoveTrivialPhi(phi);
       }
-      this.incompletePhis.delete(block);
+      this.incomplete.delete(block);
     }
     this.sealed.add(block);
   }
 
-  private fillIncompletePhi(variable: string, block: BlockId, phiIndex: number): void {
-    const ssaBlock = this.blocks.get(block);
-    if (!ssaBlock) return;
-
-    const phi = ssaBlock.instructions[phiIndex];
-    if (!phi || !isPhi(phi)) return;
-
-    const incoming: Array<readonly [BlockId, ValueId]> = [];
-    for (const pred of ssaBlock.predecessors) {
-      const value = this.readVariable(variable, pred);
-      incoming.push([pred, value] as const);
+  private recordPhi(block: BlockId, phi: PhiNode): void {
+    let list = this.phis.get(block);
+    if (list === undefined) {
+      list = [];
+      this.phis.set(block, list);
     }
-
-    // Update phi (cast to mutable to fill)
-    (phi as any).incoming = incoming;
+    list.push(phi);
+    this.phiBlock.set(phi, block);
   }
 
-  private processBlock(blockId: BlockId): void {
-    const preBlock = this.preFunc.blocks.get(blockId);
-    const ssaBlock = this.blocks.get(blockId);
-    if (!preBlock || !ssaBlock) {
-      throw new BraunError(`Block ${blockId} not found`);
+  // ───────────────────────── Trivial phis ─────────────────────────
+
+  /**
+   * A phi whose operands are all the same value (self-references ignored) is a no-op. Rewire its
+   * uses to that value and delete it.
+   *
+   * Returns the replacement if the phi was removed, `undefined` otherwise.
+   */
+  private tryRemoveTrivialPhi(phi: PhiNode): ValueId | undefined {
+    let same: ValueId | undefined;
+    for (const [, value] of phi.incoming) {
+      if (value === phi.dest) continue; // self-reference
+      if (same === undefined) same = value;
+      else if (value !== same) return undefined; // two genuinely different values
     }
+    // Every operand is the phi itself (or there are none): nothing to replace it with.
+    if (same === undefined) return undefined;
 
-    // Process assignments
-    for (const [varName, value] of preBlock.assignments) {
-      const ssaValue = this.convertValue(value, blockId);
-      this.writeVariable(varName, blockId, ssaValue);
+    const readers = this.users.get(phi.dest) ?? [];
+    for (const use of readers) {
+      if (use.kind === "inst") rewriteUses(use.node, this.ops, phi.dest, same);
+      else rewriteTerminatorUses(use.node, this.ops, phi.dest, same);
+      this.addUser(same, use);
     }
+    this.users.delete(phi.dest);
 
-    // Convert terminator
-    ssaBlock.terminator = this.convertTerminator(preBlock.terminator, blockId);
-  }
-
-  private convertValue(value: PreSSAValue<T>, blockId: BlockId): ValueId {
-    if (value.kind === "var") {
-      return this.readVariable(value.name, blockId);
-    } else {
-      // User expression: allocate a fresh value ID
-      // User is responsible for adding the actual instruction to the block
-      // (or we could provide a hook here)
-      return this.freshValue();
-    }
-  }
-
-  private convertTerminator(term: PreSSATerminator<T>, blockId: BlockId): Terminator<T> {
-    switch (term.kind) {
-      case "jump":
-        return { type: "jump", target: term.target };
-      case "branch": {
-        const cond = this.readVariable(term.cond, blockId);
-        return { type: "branch", cond, ifTrue: term.ifTrue, ifFalse: term.ifFalse };
+    // Drop the phi from its block.
+    const block = this.phiBlock.get(phi);
+    if (block !== undefined) {
+      const list = this.phis.get(block);
+      if (list) {
+        const at = list.indexOf(phi);
+        if (at >= 0) list.splice(at, 1);
       }
-      case "ret": {
-        if (term.value === undefined) {
-          return { type: "ret" };
-        }
-        const value = this.readVariable(term.value, blockId);
-        return { type: "ret", value };
-      }
-      case "user":
-        return term.term as Terminator<T>;
+      this.phiBlock.delete(phi);
     }
-  }
 
-  build(): SSAFunction<T> {
-    // Process blocks in entry-first order (simplified; proper impl would use dominator tree order)
-    const visited = new Set<BlockId>();
-    const queue = [this.preFunc.entry];
-
-    while (queue.length > 0) {
-      const blockId = queue.shift()!;
-      if (visited.has(blockId)) continue;
-      visited.add(blockId);
-
-      this.processBlock(blockId);
-      this.sealBlock(blockId);
-
-      const block = this.blocks.get(blockId);
-      if (block) {
-        queue.push(...block.successors);
+    // A reader that is itself a phi may have just become trivial.
+    for (const use of readers) {
+      if (use.kind === "inst" && isPhi(use.node)) {
+        const reader = use.node;
+        if (this.phiBlock.has(reader)) this.tryRemoveTrivialPhi(reader);
       }
     }
 
-    return {
-      id: this.preFunc.id,
-      blocks: this.blocks,
-      entry: this.preFunc.entry,
-    };
+    return same;
   }
-}
 
-// Type guard for phi nodes
-function isPhi<T>(inst: Instruction<T>): inst is PhiNode {
-  return (inst as any).type === "phi";
-}
+  // ───────────────────────── Uses ─────────────────────────
 
-/**
- * Convert pre-SSA function to SSA form using Braun algorithm.
- * Generic over T: user instruction/terminator types.
- */
-export function toSSA<T>(func: PreSSAFunction<T>): SSAFunction<T> {
-  const builder = new BraunBuilder(func);
-  return builder.build();
+  private addUser(value: ValueId, use: Use<T>): void {
+    let list = this.users.get(value);
+    if (list === undefined) {
+      list = [];
+      this.users.set(value, list);
+    }
+    // Rewriting an operand is idempotent, so a duplicate entry is harmless; but keeping the list
+    // free of them keeps the trivial-phi rewire linear.
+    for (const existing of list) {
+      if (existing.node === use.node && existing.kind === use.kind) return;
+    }
+    list.push(use);
+  }
 }
