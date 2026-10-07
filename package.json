@@ -18,7 +18,8 @@
     "test:ssa": "vitest run e2e/ssa",
     "example:nanopass": "node e2e/nanopass/example.ts",
     "bench:nanopass": "node --expose-gc e2e/nanopass/bench.ts",
-    "bench:ssa": "node --expose-gc e2e/ssa/bench.ts"
+    "bench:ssa": "node --expose-gc e2e/ssa/bench.ts",
+    "bench:scheme": "node e2e/scheme/bench/report.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

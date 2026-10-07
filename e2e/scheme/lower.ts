@@ -65,7 +65,8 @@ function builtinFunctions(): Map<string, SSAFunction<SchemeNode>> {
   return new Map([["print", print]]);
 }
 
-const BUILTINS = builtinFunctions();
+/** The built-in functions, so anything assembling a module can include them. */
+export const BUILTINS = builtinFunctions();
 
 export function lower(program: S14_Program): LoweredProgram {
   const functions = new Map<string, SSAFunction<SchemeNode>>();
