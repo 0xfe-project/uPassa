@@ -41,7 +41,8 @@ e2e/
     interp.ts                      runs the optimized SSA IR; the oracle
     run.ts                         source -> running program, the one place that knows the chain
     fixtures/       *.ts           programs and their expected output
-    bench/                         the benchmark corpus, hand-written baselines, the report
+    tree-interp.ts                 interprets S0 directly; the row with no compiler
+    bench/                         the corpus, hand-written baselines, the report
     tests/          *.test.ts
 ```
 
@@ -120,7 +121,20 @@ expected values in `fixtures/programs.ts` are worked out by hand from the source
 fixtures are small and each says what it covers.
 
 `bench/` is the exception to "small": it is where the question the project exists to ask — does
-functional code run like C — is answered, against hand-written C-style baselines in the same IR.
+functional code run like C — is answered. Four rows per program, and they are not four measurements
+of the same thing:
+
+| row | what it is | what it answers |
+|-----|-----------|-----------------|
+| `interpreted` | the same source, run by `tree-interp.ts`, no compiler | what compiling buys |
+| `compiled` | the same source, SSA passes off | what the SSA passes buy |
+| `optimized` | the same source, passes on | |
+| `hand-written` | **a different program**, C style, in `baselines.ts` | what the algorithm costs |
+
+The `hand-written` row is not a baseline for the compiler: it is a different program. It is the row
+that says what the source's choice of algorithm costs — `map-fold` builds two lists and calls two
+closures per element where a C programmer writes one loop — and it is the only row that can be read
+as "how far is the functional style from the C style".
 
 ## What is not here
 
@@ -140,7 +154,7 @@ pnpm test:nanopass     # one suite
 pnpm test:ssa
 pnpm bench:nanopass    # scaling: log-log slope over n/2n/4n/8n
 pnpm bench:ssa
-pnpm bench:scheme      # unoptimized vs optimized vs hand-written, per program
+pnpm bench:scheme      # interpreted vs compiled vs optimized vs hand-written, per program
 ```
 
 Both scaling benchmarks exit non-zero on a flagged slope. A gate that always passes is worse than no

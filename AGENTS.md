@@ -112,6 +112,44 @@ Two traps, both hit before:
 The benchmarks have already caught two real quadratics — see the commit
 "fix two real quadratics". Keep them honest: if you change a hot path, re-run.
 
+## Measuring the compiler against something
+
+`bench:scheme` reports **four rows**, and they answer four different questions. Reading
+one as another is the mistake this section exists to prevent:
+
+| row | what it is | what it answers |
+|-----|-----------|-----------------|
+| `interpreted` | the same source, no compiler | what compiling buys |
+| `compiled` | the same source, SSA passes off | what the SSA passes buy |
+| `optimized` | the same source, passes on | |
+| `hand-written` | **a different program** | what the algorithm costs |
+
+The `hand-written` row is the same computation in C style — loops instead of recursion,
+no intermediate data. It is not the same source, so it is **not** a baseline for the
+compiler. It was the only baseline in the first version of the report, which meant "how
+good is the compiler" was being answered by comparing two different algorithms.
+
+Two rules follow, and both were broken:
+
+1. **A baseline has to be the same program.** To ask what compiling buys, run the same
+   source without a compiler. `e2e/scheme/tree-interp.ts` is that.
+2. **Do not cripple the baseline.** The source interpreter implements tail calls. Without
+   a trampoline a 100,000-iteration loop overflows the JS stack, and the compiler's
+   advantage would read as "it can run the program at all" — true, and the largest single
+   thing compiling buys, but it would hide how much *work* is saved. A baseline that
+   cannot run the program is not a baseline.
+
+Comparisons are stated in words, never as a bare ratio: **fewer instructions is less
+work**, and a ratio whose direction is only implied gets read the wrong way. This file's
+report once labelled a division `optimized/hand-written` while dividing the other way
+round, which turned the worst result in the corpus into the best-looking one. A test now
+pins the direction.
+
+The counters are defined in "Counting what a program does" above. For the interpreted
+row the unit is coarser — one tree node plus one variable reference — and its omissions
+(chain depth, dispatch, the frame a `let` allocates) are all in the direction of making
+it look cheaper, so the factor between the rows is a lower bound on what compiling saved.
+
 ## SSA IR: minimal and generic
 
 The framework owns only control flow:
@@ -200,11 +238,28 @@ getting the order wrong is quiet: the header's frame reads resolve to the bare
 parameter name, which looks exactly like a phi with one operand after the trivial-phi
 rule has removed it.
 
+**A rewrite that reorders two traversals needs an effect condition.** Deforestation turns
+`(fold f a (map g xs))` into one loop, which interleaves `g` and `f` where they used to run
+one after the other. If both do something observable, that is a different program —
+demonstrated: with both printing, the unfused order is `1,2,0` and the fused order is
+`1,0,2`. With only one of them effectful the relative order of the effects is unchanged,
+so the condition is **at least one of the two must be pure**, checked at the call site
+against the closure actually passed. Syntactic purity of the body cannot decide it:
+`(f acc (car xs))` contains a call in both the safe and the unsafe case.
+
 **A pass must not report a change it has already made.** CSE rewrote uses only in the
 block that found the duplicate, so readers in other blocks kept the old name live, DCE
 could not remove the instruction, and every round found the same duplicate again. The
 pipeline never reached a fixpoint. When a pass rewrites a value, it rewrites the
 readers everywhere.
+
+**A pass that needs the whole program cannot be fused, and that is the correct
+classification.** Deciding whether a call site fuses needs to know which functions are
+producers and which are consumers, so `deforest` threads its tables through `sig`. A pass
+with extra values controls its own descent, so `canFuse` says no. The first version did
+its own traversal and merged the fused function into the tree without going through the
+walker; a fused `mark-tail` then never saw it and every tail marker on a fused loop was
+silently dropped — the same bug `lift-lambdas` had.
 
 **New code in a non-recursive traversal may need an explicit visit.** A node synthesised
 inside a handler and not passed to `rec` is invisible to every later pass in a fused
