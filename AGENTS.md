@@ -64,7 +64,7 @@ Scope: framework code plus the test passes in `e2e/`.
 Every superlinear spot is either fixed or documented as exempt, with a reason:
 
 - **(a) local** — inside one function, n is bounded
-- **(b) CFG-local** — only within its own block
+- **(b) block-local** — only within its own block
 - **(c) parallelizable** — a pure map with no cross-element ordering
 
 Patterns to watch for:

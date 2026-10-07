@@ -89,7 +89,7 @@ export function buildDomTree<T>(func: SSAFunction<T>): DomTree {
   //
   // Lets `dominates(a, b)` be answered in O(1): a dominates b iff b's interval
   // is nested inside a's. Without this, each query walks up the tree — and
-  // loop detection queries it once per CFG edge, giving O(n²) on deep CFGs.
+  // loop detection queries it once per edge, giving O(n²) on deep block graphs.
   let counter = 0;
   const number = (blockId: BlockId): void => {
     const node = nodes.get(blockId);
@@ -120,7 +120,7 @@ function computeRPO<T>(
   const postorder: BlockId[] = [];
   const visited = new Set<BlockId>();
 
-  // Iterative DFS (explicit stack) — deep CFGs would blow the native stack otherwise.
+  // Iterative DFS (explicit stack) — deep block graphs would blow the native stack otherwise.
   const stack: Array<{ block: BlockId; succIndex: number }> = [{ block: entry, succIndex: 0 }];
   visited.add(entry);
 
@@ -151,7 +151,7 @@ function computeRPO<T>(
 /**
  * Compute immediate dominators using the Cooper-Harvey-Kennedy algorithm.
  *
- * Simple, near-linear in practice, and linear on reducible CFGs like chains.
+ * Simple, near-linear in practice, and linear on reducible graphs like chains.
  * Avoids the O(n²) set-of-all-dominators representation entirely: we store
  * only the immediate dominator per block.
  *

@@ -1,7 +1,7 @@
 /**
  * Loop recognition and analysis
  *
- * Detects natural loops in the CFG using dominator tree.
+ * Detects natural loops using the dominator tree.
  *
  * Natural loop:
  * - A back edge from B to H where H dominates B
@@ -27,7 +27,7 @@ import { dominates } from "./domtree.ts";
 export class LoopError extends Error {}
 
 /**
- * A natural loop in the CFG
+ * A natural loop
  */
 export interface Loop {
   id: number; // Unique loop identifier

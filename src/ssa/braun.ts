@@ -16,7 +16,7 @@ import type { SSAFunction, BasicBlock, Instruction, Terminator, ValueId, BlockId
 export class BraunError extends Error {}
 
 /**
- * Input to Braun: pre-SSA CFG with variable names.
+ * Input to Braun: the function before phi insertion, with variable names as operands.
  * Generic over T: user's instruction/terminator types.
  */
 export interface PreSSABlock<T> {

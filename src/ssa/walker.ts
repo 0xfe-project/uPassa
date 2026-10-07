@@ -1,16 +1,16 @@
 /**
- * SSA walker: CFG traversal and transformation utilities
+ * SSA walker: block traversal and transformation utilities
  *
  * Provides:
  * - Graph visitors (for analysis passes)
  * - In-place transformers (for optimization passes)
- * - Block iterators (CFG traversal: DFS, RPO, etc.)
+ * - Block iterators (DFS, RPO, etc.)
  */
 
 import type { SSAFunction, BasicBlock, Instruction, BlockId } from "./ir.ts";
 
 /**
- * CFG traversal orders
+ * Block traversal orders
  */
 export type TraversalOrder =
   | "entry-first" // Entry block first, then successors (BFS-like)
@@ -34,9 +34,9 @@ export interface InstructionVisitor<T = never> {
 }
 
 /**
- * Walk CFG in specified order, calling visitor for each block.
+ * Walk the function's blocks in the specified order, calling the visitor for each.
  */
-export function walkCFG<T>(func: SSAFunction<T>, order: TraversalOrder, visitor: BlockVisitor<T>): void {
+export function walkBlocks<T>(func: SSAFunction<T>, order: TraversalOrder, visitor: BlockVisitor<T>): void {
   const visited = new Set<BlockId>();
 
   switch (order) {
@@ -163,7 +163,7 @@ export function walkInstructions<T>(
   order: TraversalOrder,
   visitor: InstructionVisitor<T>,
 ): void {
-  walkCFG(func, order, (block) => {
+  walkBlocks(func, order, (block) => {
     for (let i = 0; i < block.instructions.length; i++) {
       const inst = block.instructions[i]!;
       const result = visitor(inst, block, func);
@@ -202,7 +202,7 @@ export function transformInstructions<T>(
 ): { changed: boolean } {
   let changed = false;
 
-  walkCFG(func, order, (block) => {
+  walkBlocks(func, order, (block) => {
     for (let i = 0; i < block.instructions.length; i++) {
       const inst = block.instructions[i]!;
       const result = transformer(inst, block, func);
@@ -247,7 +247,7 @@ export function transformBlocks<T>(
   let changed = false;
   const toRemove: BlockId[] = [];
 
-  walkCFG(func, order, (block) => {
+  walkBlocks(func, order, (block) => {
     const result = transformer(block, func);
 
     if (result === null) {
@@ -259,7 +259,7 @@ export function transformBlocks<T>(
     }
   });
 
-  // Remove blocks (caller must ensure CFG remains valid)
+  // Remove blocks (caller must ensure the block graph remains valid)
   for (const blockId of toRemove) {
     func.blocks.delete(blockId);
   }

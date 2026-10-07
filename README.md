@@ -150,7 +150,7 @@ src/
   ssa/          Graph optimization framework
     ir.ts         Minimal IR (generic over user instructions)
     braun.ts      Braun SSA construction
-    walker.ts     CFG traversal utilities
+    walker.ts     Block traversal utilities
     verify.ts     SSA invariant checker
     pass.ts       Pass declarations
     pass-manager.ts  Scheduling and analysis caching
