@@ -5,42 +5,72 @@
  * — as its own pass, before anything is converted — means closure conversion is a pure reshaping
  * with no analysis in it.
  *
- * The extra value is the set of free variables seen so far. It is **mutated** rather than copied as
- * it flows through the children: the threading model already visits siblings in order, so
- * accumulating in place is exactly the union, and copying at every variable would be quadratic.
+ * Top-level names are **not** captures. A reference to a top-level function from inside a lambda is
+ * a global reference, and a closure that captured it would have to capture itself — the definition
+ * is not bound yet at the point the closure is built. Excluding them is what makes a self-recursive
+ * function liftable.
  *
- * A lambda starts a fresh set for its body, then contributes `body's free variables minus its own
- * parameters` to the enclosing set.
+ * A lambda's body is analysed with a fresh set, and what the body captured (minus the lambda's own
+ * parameters) is what the lambda contributes to its enclosing scope. The set is mutated rather than
+ * copied as it flows through the children: the threading model visits siblings in order, so
+ * accumulating in place is exactly the union, and copying at every variable would be quadratic.
  */
 
 import { pass, sig, buildWalker } from "../../../src/nanopass/index.ts";
-import { S10, S11, type S10_Expr, type S11_Expr } from "../langs/chain.ts";
+import { S10, S11, type S10_Expr, type S11_Expr, type S11_Program } from "../langs/chain.ts";
+
+interface Ctx {
+  /** Free variables seen so far in the scope being analysed. Swapped per lambda. */
+  free: Set<string>;
+  /** Names bound at the top level. A reference to one of these is not a capture. */
+  globals: Set<string>;
+}
 
 const spec = pass({
   from: S10,
   to: S11,
-  sig: sig(new Set<string>()),
-  init: (): [Set<string>] => [new Set<string>()],
+  sig: sig({ free: new Set<string>(), globals: new Set<string>() } satisfies Ctx),
+  init: (): [Ctx] => [{ free: new Set(), globals: new Set() }],
   rules: {
+    Program: {
+      Program: (n, rec, c): readonly [S11_Program, Ctx] => {
+        for (const d of n.defs) c.globals.add(d.name);
+        const defs = n.defs.map((d) => rec(d, c)[0]);
+        const body = n.body.map((e) => rec(e, c)[0]);
+        return [{ type: "Program", defs, body } as S11_Program, c];
+      },
+    },
+
     Expr: {
-      Var: (n, rec, free): readonly [S11_Expr, Set<string>] => {
-        free.add(n.name);
-        return [n as unknown as S11_Expr, free];
+      Var: (n, rec, c): readonly [S11_Expr, Ctx] => {
+        c.free.add(n.name);
+        return [n as unknown as S11_Expr, c];
       },
 
-      Lambda: (n, rec, free): readonly [S11_Expr, Set<string>] => {
-        // A fresh set for the body: what the body captures is decided without the enclosing
-        // accumulation mixed in.
+      Let: (n, rec, c): readonly [S11_Expr, Ctx] => {
+        const [value] = rec(n.value, c);
+        const [body] = rec(n.body, c);
+        // The name is bound here, so whatever used it is not a capture. Forgetting this makes a
+        // local look free, and closure conversion then carries it into the closure's frame — a
+        // variable that is no longer bound anywhere by the time the body runs.
+        c.free.delete(n.name);
+        return [{ type: "Let", name: n.name, value, body }, c];
+      },
+
+      Lambda: (n, rec, c): readonly [S11_Expr, Ctx] => {
+        const outer = c.free;
         const inner = new Set<string>();
-        const [body] = rec(n.body as S10_Expr, inner);
+        c.free = inner;
+        const [body] = rec(n.body as S10_Expr, c);
+        c.free = outer;
 
         const params = new Set(n.params);
-        const captured = [...inner].filter((name) => !params.has(name));
+        const captured = [...inner].filter((name) => !params.has(name) && !c.globals.has(name));
 
-        // The lambda itself contributes its captures to whatever encloses it.
-        for (const name of captured) free.add(name);
+        // The lambda contributes its captures to whatever encloses it.
+        for (const name of captured) outer.add(name);
 
-        return [{ type: "Lambda", params: n.params, body, free: captured }, free];
+        return [{ type: "Lambda", params: n.params, body, free: captured }, c];
       },
     },
   },

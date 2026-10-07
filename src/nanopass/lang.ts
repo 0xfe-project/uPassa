@@ -192,9 +192,11 @@ export function derive<
   type RM2 = Record<string, Record<string, FieldDesc>>;
   const rules: RM2 = {};
   for (const [nt, prods] of Object.entries(base.rules as RM2)) rules[nt] = { ...prods };
+  // Remove first, then add — the same order `MergeProds` describes. The other order silently
+  // deletes a production that was just redefined, and the type level would still claim it exists.
+  for (const tag of remove ?? []) for (const nt of Object.keys(rules)) delete rules[nt]![tag];
   for (const [nt, prods] of Object.entries((add ?? {}) as unknown as RM2)) {
     rules[nt] = { ...(rules[nt] ?? {}), ...prods };
   }
-  for (const tag of remove ?? []) for (const nt of Object.keys(rules)) delete rules[nt]![tag];
   return { id, entry: base.entry, rules } as never;
 }

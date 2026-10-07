@@ -38,11 +38,11 @@
  *   S6
  *    |   normalize-begin        n-ary begin -> nested let
  *   S7
- *    |   desugar-let            let -> ((lambda ...) ...)
- *   S8   core: int, bool, void, var, lambda, app, if
- *    |   resolve-primitives     known operator names -> prim nodes
- *   S9
  *    |   alpha-rename           every binder gets a unique name
+ *   S8
+ *    |   normalize-let          n bindings -> n nested one-binding lets
+ *   S9   core: int, bool, void, var, let, lambda, app, if
+ *    |   resolve-primitives     known operator names -> prim nodes
  *   S10
  *    |   uncover-free           each lambda records its free variables
  *   S11
@@ -52,6 +52,14 @@
  *   S13  program of top-level functions
  *    |   mark-tail              tail positions get an explicit marker
  *   S14  ready for lowering
+ *
+ * `let` survives to the end on purpose. Desugaring it into an applied lambda - the usual move -
+ * would make closure conversion allocate a closure for every local binding, and the benchmarks are
+ * about whether functional code runs like C. A `let` is a local; it stays one.
+ *
+ * alpha-rename runs before normalize-let because nesting a parallel `let` is only sound once no two
+ * binders share a name: `(let ((a x) (b a)) e)` nests correctly only if the inner `a` cannot see the
+ * outer one, and unique names are what guarantee that.
  */
 
 import { language, derive, list, type NodeOf } from "../../../src/nanopass/index.ts";
@@ -119,18 +127,23 @@ export const S6 = derive({ id: "S6", base: S5, remove: ["IfAlt"] });
 /** S7: `begin` is gone (folded into `let`). */
 export const S7 = derive({ id: "S7", base: S6, remove: ["Begin"] });
 
-/** S8: `let` is gone. Core forms only. */
-export const S8 = derive({ id: "S8", base: S7, remove: ["Let"] });
+/** S8: every binder has a unique name. No productions change. */
+export const S8 = derive({ id: "S8", base: S7 });
 
-/** S9: operator names became `prim` nodes. */
+/** S9: a `let` binds exactly one name. `Binding` is gone. */
 export const S9 = derive({
   id: "S9",
   base: S8,
-  add: { Expr: { Prim: { op: "string", args: list("Expr") } } },
+  remove: ["Let", "Binding"],
+  add: { Expr: { Let: { name: "string", value: "Expr", body: "Expr" } } },
 });
 
-/** S10: every binder has a unique name. No productions change. */
-export const S10 = derive({ id: "S10", base: S9 });
+/** S10: operator names became `prim` nodes. */
+export const S10 = derive({
+  id: "S10",
+  base: S9,
+  add: { Expr: { Prim: { op: "string", args: list("Expr") } } },
+});
 
 /** S11: lambdas carry their free variables. */
 export const S11 = derive({
@@ -140,12 +153,14 @@ export const S11 = derive({
   add: { Expr: { Lambda: { params: list("string"), body: "Expr", free: list("string") } } },
 });
 
-/** S12: lambdas became closures; applications became calls. */
+/** S12: lambdas became closures; applications became calls. Lifted bodies are collected in `fns`. */
 export const S12 = derive({
   id: "S12",
   base: S11,
   remove: ["Lambda", "App"],
   add: {
+    Program: { Program: { defs: list("Def"), body: list("Expr"), fns: list("FunDef") } },
+    FunDef: { FunDef: { name: "string", params: list("string"), body: "Expr" } },
     Expr: {
       MakeClosure: { fn: "string", free: list("Expr") },
       Call: { fn: "Expr", args: list("Expr") },
@@ -153,13 +168,19 @@ export const S12 = derive({
   },
 });
 
-/** S13: nested lambdas are gone; the program is a list of top-level functions. */
+/**
+ * S13: the lifted functions are top-level, and `fns` is gone.
+ *
+ * `DefFun` comes back — it was removed at S1 — because a program is again a list of definitions,
+ * some of which are functions. That is the honest shape for what a program is at this point.
+ */
 export const S13 = derive({
   id: "S13",
   base: S12,
+  remove: ["Program"],
   add: {
-    Program: { Program: { defs: list("FunDef"), body: list("Expr") } },
-    FunDef: { FunDef: { name: "string", params: list("string"), body: "Expr" } },
+    Program: { Program: { defs: list("Def"), body: list("Expr") } },
+    Def: { DefFun: { name: "string", params: list("string"), body: "Expr" } },
   },
 });
 
@@ -185,11 +206,16 @@ export type S5_Expr = NodeOf<typeof S5, "Expr">;
 export type S6_Expr = NodeOf<typeof S6, "Expr">;
 export type S7_Expr = NodeOf<typeof S7, "Expr">;
 export type S8_Expr = NodeOf<typeof S8, "Expr">;
+export type S8_Binding = NodeOf<typeof S8, "Binding">;
 export type S9_Expr = NodeOf<typeof S9, "Expr">;
 export type S10_Expr = NodeOf<typeof S10, "Expr">;
 export type S11_Expr = NodeOf<typeof S11, "Expr">;
+export type S11_Program = NodeOf<typeof S11, "Program">;
 export type S12_Expr = NodeOf<typeof S12, "Expr">;
+export type S12_Program = NodeOf<typeof S12, "Program">;
+export type S12_FunDef = NodeOf<typeof S12, "FunDef">;
 export type S13_Program = NodeOf<typeof S13, "Program">;
+export type S13_Def = NodeOf<typeof S13, "Def">;
 export type S13_Expr = NodeOf<typeof S13, "Expr">;
 export type S14_Program = NodeOf<typeof S14, "Program">;
 export type S14_Expr = NodeOf<typeof S14, "Expr">;

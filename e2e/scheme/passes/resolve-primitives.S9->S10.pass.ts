@@ -10,7 +10,7 @@
  */
 
 import { pass, buildWalker } from "../../../src/nanopass/index.ts";
-import { S8, S9, type S9_Expr } from "../langs/chain.ts";
+import { S9, S10, type S10_Expr } from "../langs/chain.ts";
 
 /** Source name -> IR op. Names not in here stay ordinary applications. */
 export const PRIMITIVE_OPS: Readonly<Record<string, string>> = {
@@ -35,11 +35,11 @@ export const NON_PRIM_OPS: Readonly<Record<string, string>> = {
 };
 
 const spec = pass({
-  from: S8,
-  to: S9,
+  from: S9,
+  to: S10,
   rules: {
     Expr: {
-      App: (n, rec): S9_Expr => {
+      App: (n, rec): S10_Expr => {
         const fn = n.func;
         if (fn.type === "Var") {
           const op = PRIMITIVE_OPS[fn.name] ?? NON_PRIM_OPS[fn.name];
