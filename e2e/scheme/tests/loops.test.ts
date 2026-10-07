@@ -46,12 +46,24 @@ describe("a self tail call becomes a loop", () => {
     });
   }
 
-  test("the recursive fixture stops building a frame per iteration", () => {
+  test("a tail call reuses its frame, so neither form builds one per iteration", () => {
+    // This is what a tail call is: the callee's frame takes the place of the caller's. Both forms
+    // therefore build one frame for 100,000 iterations — the loop conversion is not what buys that.
     const source = FIXTURE("deep-tail-recursion");
     const called = runSource(source, [], { loops: false });
     const looped = runSource(source, [], { loops: true });
-    expect(called.stats.frames).toBeGreaterThan(100_000);
+    expect(called.stats.frames).toBeLessThan(10);
     expect(looped.stats.frames).toBeLessThan(10);
+  });
+
+  test("what the loop conversion buys is instructions, once the copies are gone", () => {
+    // The rewrite itself adds work: the arguments become explicit copies into the frame slots, and
+    // the header gains a phi per slot. Copy propagation removes the copies and hoisting moves the
+    // loop-invariant constants out, and what is left is shorter than the call it replaced.
+    const source = FIXTURE("deep-tail-recursion");
+    const called = runSource(source, [], { loops: false, optimize: true });
+    const looped = runSource(source, [], { loops: true, optimize: true });
+    expect(looped.stats.instructions).toBeLessThan(called.stats.instructions);
   });
 
   test("the loop body is the shape a C compiler would emit", () => {

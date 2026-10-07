@@ -17,6 +17,13 @@ export interface Benchmark {
   readonly source: string;
   /** What the program prints, worked out by hand from the source. */
   readonly expected: readonly string[];
+  /**
+   * What the hand-written row is, when it is not simply the same program in C style.
+   *
+   * `cpstak` needs one: the same function in direct style is what a C programmer writes, and the
+   * whole point of the benchmark is what writing it in CPS costs.
+   */
+  readonly baselineNote?: string;
 }
 
 export const BENCHMARKS: readonly Benchmark[] = [
@@ -63,6 +70,65 @@ export const BENCHMARKS: readonly Benchmark[] = [
 (define (apply-n f n acc) (if (= n 0) acc (apply-n f (- n 1) (f acc))))
 (print (apply-n (adder 3) 100000 0))`,
     expected: ["300000"],
+  },
+  {
+    name: "tak",
+    measures: "three recursive calls per step, one of them in tail position",
+    source: `
+(define (tak x y z)
+  (if (< y x)
+      (tak (tak (- x 1) y z) (tak (- y 1) z x) (tak (- z 1) x y))
+      z))
+(print (tak 18 12 6))`,
+    expected: ["7"],
+  },
+  {
+    name: "cpstak",
+    measures: "the same function in CPS: one continuation closure per step",
+    baselineNote: "direct-style tak, which is what a C programmer writes for this function",
+    source: `
+(define (cpstak x y z k)
+  (if (< y x)
+      (cpstak (- x 1) y z
+              (lambda (a)
+                (cpstak (- y 1) z x
+                        (lambda (b)
+                          (cpstak (- z 1) x y
+                                  (lambda (c) (cpstak a b c k)))))))
+      (k z)))
+(define (tak-cps x y z) (cpstak x y z (lambda (v) v)))
+(print (tak-cps 18 12 6))`,
+    expected: ["7"],
+  },
+  {
+    name: "mini-eval",
+    measures: "an interpreter for a tiny language: tag dispatch, car/cdr chains, recursion",
+    baselineNote: "the same evaluator with direct calls, and the environment hoisted out of the loop",
+    source: `
+(define (mkvar i) (cons 1 (cons i ())))
+(define (mkadd a b) (cons 2 (cons a (cons b ()))))
+(define (mkmul a b) (cons 3 (cons a (cons b ()))))
+(define (build n)
+  (if (= n 0)
+      (mkvar 1)
+      (if (= (modulo n 2) 0)
+          (mkadd (build (- n 1)) (build (- n 1)))
+          (mkmul (build (- n 1)) (build (- n 1))))))
+(define (lookup i env)
+  (if (null? env) 0 (if (= i (car (car env))) (cdr (car env)) (lookup i (cdr env)))))
+(define (ev e env)
+  (if (= (car e) 0)
+      (car (cdr e))
+      (if (= (car e) 1)
+          (lookup (car (cdr e)) env)
+          (if (= (car e) 2)
+              (modulo (+ (ev (car (cdr e)) env) (ev (car (cdr (cdr e))) env)) 1000003)
+              (modulo (* (ev (car (cdr e)) env) (ev (car (cdr (cdr e))) env)) 1000003)))))
+(define expr (build 10))
+(define env (cons (cons 1 3) ()))
+(define (repeat n acc) (if (= n 0) acc (repeat (- n 1) (+ acc (ev expr env)))))
+(print (repeat 20 0))`,
+    expected: ["2955960"],
   },
   {
     name: "insertion-sort",

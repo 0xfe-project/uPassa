@@ -91,4 +91,21 @@ describe("where the compiler stands", () => {
     // is work the C-shaped version does not do, and no amount of SSA optimization removes it.
     expect(ratio("map-fold")).toBeGreaterThan(4);
   });
+
+  test("writing the same function in CPS costs instructions and a closure per step", () => {
+    // This is why the compiler is direct-style. The baseline for cpstak is direct-style tak, which
+    // is what a C programmer writes for the same function.
+    const cps = row("cpstak", "optimized");
+    const direct = row("cpstak", "hand-written");
+    expect(cps.instructions).toBeGreaterThan(direct.instructions * 1.4);
+    expect(cps.allocs).toBeGreaterThan(40_000);
+    expect(direct.allocs).toBe(0);
+  });
+
+  test("an interpreter written in the language compiles to what a hand-written one costs", () => {
+    // The interesting positive result: tag dispatch and car/cdr chains are not something the
+    // compiler makes worse.
+    expect(ratio("mini-eval")).toBeGreaterThan(0.9);
+    expect(ratio("mini-eval")).toBeLessThan(1.1);
+  });
 });

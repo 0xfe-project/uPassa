@@ -8,8 +8,11 @@
  * Wall-clock is deliberately absent. The interpreter's dispatch dominates it, so it would measure
  * the interpreter rather than the program. What is reported is what the *program* does:
  *
- *   instructions  one per instruction executed, phis included, plus one per frame slot written
- *                 when a call is entered — entering a call is work a C loop does not do
+ *   instructions  one per instruction executed, plus one per frame slot written when a call is
+ *                 entered. Phi nodes and terminators are not counted: a phi names a merge of values
+ *                 that already exist, and in the code this IR stands for the register allocator
+ *                 resolves it away. Counting phis but not terminators would decide "did this tail
+ *                 call become a loop" by the counting rather than by the program
  *   frames        frames created; a self tail call that became a loop reuses one
  *   allocs        heap allocations: pairs and closures
  *
@@ -34,6 +37,8 @@ export interface BenchmarkReport {
   readonly name: string;
   readonly measures: string;
   readonly expected: readonly string[];
+  /** What the hand-written row is, when it is not simply the same program in C style. */
+  readonly baselineNote: string | undefined;
   readonly rows: readonly Row[];
 }
 
@@ -68,6 +73,7 @@ export function report(): readonly BenchmarkReport[] {
       name: b.name,
       measures: b.measures,
       expected: b.expected,
+      baselineNote: b.baselineNote,
       rows: [row("unoptimized", plain), row("optimized", optimized), row("hand-written", handwritten)],
     };
   });
@@ -81,6 +87,7 @@ export function format(reports: readonly BenchmarkReport[]): string {
 
   for (const r of reports) {
     lines.push(`${r.name} — ${r.measures}`);
+    if (r.baselineNote !== undefined) lines.push(`  (hand-written row: ${r.baselineNote})`);
     lines.push(`  ${pad("", 14)}${pad("instructions", 15)}${pad("frames", 12)}${pad("allocs", 10)}`);
     for (const row of r.rows) {
       lines.push(

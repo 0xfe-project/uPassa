@@ -13,9 +13,14 @@
  * executes and how many allocations it performs. Those are the numbers the benchmarks compare
  * between unoptimized, optimized, and a hand-written C-style baseline.
  *
- * One unit is one instruction executed — phis included, since the interpreter really does resolve
- * one — or one frame slot written when a call is entered. The second half matters: a frame is not
- * free, and a loop that calls itself pays for one every iteration where a real loop would not.
+ * One unit is one instruction executed, or one frame slot written when a call is entered. Phi nodes
+ * are not instructions: they name a merge of values that already exist, and in the code this IR
+ * stands for the register allocator resolves them away. Terminators are not counted either, for the
+ * same reason — the two halves of "did this tail call become a loop" have to be counted the same
+ * way or the comparison between them is decided by the counting.
+ *
+ * Frame slots are counted, and they are the half that is easy to forget: a frame is not free, and a
+ * loop that calls itself pays for one every iteration where a real loop would not.
  *
  * ── Tail calls
  *
@@ -88,7 +93,7 @@ export function show(v: Value): string {
 export class SchemeRuntimeError extends Error {}
 
 export interface Stats {
-  /** IR instructions executed, phi nodes included. */
+  /** IR instructions executed. Phi nodes are not counted; see `execBlock`. */
   instructions: number;
   /** Heap allocations: `cons` and `make-closure`. */
   allocs: number;
@@ -97,11 +102,11 @@ export interface Stats {
   /** Tail calls performed. */
   tailcalls: number;
   /**
-   * Frames created.
+   * Frames allocated.
    *
    * A frame is the storage a call needs, so this is the third thing a program allocates — next to
-   * pairs and closures. It is the number that shows whether a self tail call became a loop: the
-   * loop reuses one frame, the call does not.
+   * pairs and closures. A tail call reuses the caller's frame rather than allocating one, so this
+   * counts the calls that genuinely need somewhere to return to.
    */
   frames: number;
 }
@@ -152,9 +157,15 @@ class Interp {
     let fn = this.function(fnName);
     let argv = args;
     let env = free;
+    // The frame is allocated once and reused across tail calls. That is what a tail call *is* — the
+    // callee's frame takes the place of the caller's — so a tail-recursive program builds one frame
+    // no matter how many times it goes round. Allocating a fresh one per iteration would make the
+    // frame count measure this interpreter's bookkeeping instead of the program's.
+    const frame = new Map<ValueId, Value>();
+    this.stats.frames++;
 
     for (;;) {
-      const outcome = this.execBody(fn, argv, env);
+      const outcome = this.execBody(fn, argv, env, frame);
       if (outcome.kind === "ret") return outcome.value;
 
       this.stats.tailcalls++;
@@ -162,6 +173,7 @@ class Interp {
       fn = this.function(target.fn);
       argv = outcome.args.map((a) => outcome.values.get(a) ?? V_VOID);
       env = target.free;
+      frame.clear();
     }
   }
 
@@ -171,15 +183,17 @@ class Interp {
     return f;
   }
 
-  private execBody(fn: SSAFunction<SchemeNode>, args: Value[], free: Value[]): Outcome {
-    this.stats.frames++;
-
+  private execBody(
+    fn: SSAFunction<SchemeNode>,
+    args: Value[],
+    free: Value[],
+    values: Map<ValueId, Value>,
+  ): Outcome {
     // Seeding a frame is one store per slot, and it is counted. A program that calls in a loop
     // pays it every iteration; a C loop does not. Leaving it out of the count would make the
     // comparison systematically favour the calling form, which is the thing being measured.
     this.stats.instructions += args.length + free.length;
 
-    const values = new Map<ValueId, Value>();
     for (let i = 0; i < free.length; i++) values.set(`f${i}`, free[i]!);
     for (let i = 0; i < args.length; i++) values.set(`p${i}`, args[i]!);
 
@@ -241,9 +255,13 @@ class Interp {
     from: BlockId | undefined,
   ): void {
     for (const inst of block.instructions) {
-      this.stats.instructions++;
-
       if (inst.type === "phi") {
+        // A phi is not counted as an instruction. It names a merge of values that already exist;
+        // the interpreter has to look it up, but the program does not do anything here, and in the
+        // code this IR stands for the register allocator resolves it away. Counting it would count
+        // the SSA representation rather than the program — and it would do so unevenly, since a
+        // tail call is a terminator and terminators are not counted either.
+        //
         // A phi's value depends on which edge we arrived along.
         const pair = inst.incoming.find(([pred]) => pred === from);
         if (pair === undefined) {
@@ -254,6 +272,8 @@ class Interp {
         values.set(inst.dest, this.get(values, pair[1], fn));
         continue;
       }
+
+      this.stats.instructions++;
 
       // The instruction slot never holds a terminator; the framework keeps the two apart. Checking
       // rather than casting, so a malformed module says so instead of misbehaving.

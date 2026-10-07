@@ -357,6 +357,178 @@ function insertionSortMain(): SSAFunction<SchemeNode> {
     .done();
 }
 
+// ───────────────────────── tak ─────────────────────────
+
+/**
+ * Three recursive calls per step, the outer one in tail position.
+ *
+ * The three inner calls are arguments to the outer one, so they are not tail calls and each needs
+ * its own frame — this is the shape of the function, and there is no better one.
+ */
+function tak(): SSAFunction<SchemeNode> {
+  return fn("tak")
+    .block("entry", (b) => {
+      const recurse = b.prim("lt", "p1", "p0");
+      b.branch(recurse, "step", "base");
+    })
+    .block("base", (b) => b.ret("p2"))
+    .block("step", (b) => {
+      const a = b.call(b.funcRef("tak"), [b.prim("sub", "p0", b.const(1)), "p1", "p2"]);
+      const c = b.call(b.funcRef("tak"), [b.prim("sub", "p1", b.const(1)), "p2", "p0"]);
+      const d = b.call(b.funcRef("tak"), [b.prim("sub", "p2", b.const(1)), "p0", "p1"]);
+      b.tailcall(b.funcRef("tak"), [a, c, d]);
+    })
+    .done();
+}
+
+function takMain(): SSAFunction<SchemeNode> {
+  return fn("$main")
+    .block("entry", (b) => {
+      const v = b.call(b.funcRef("tak"), [b.const(18), b.const(12), b.const(6)]);
+      printValue(b, v);
+      b.ret();
+    })
+    .done();
+}
+
+// ───────────────────────── mini-eval ─────────────────────────
+
+/** Build the expression tree by a loop, with `(modulo (* n 37) 100)` as the leaf tag... */
+function buildExpr(): SSAFunction<SchemeNode> {
+  // The tree alternates add and multiply by parity, exactly as the Scheme version does. It cannot be
+  // built by a loop: attaching a child to a pair needs a way to write a pair's field, and this IR
+  // has none. A C programmer working in this IR would recurse here too.
+  return fn("buildExpr")
+    .block("entry", (b) => {
+      const root = b.call(b.funcRef("mknode"), [b.const(10)]);
+      b.ret(root);
+    })
+    .done();
+}
+
+/** `(tag . (payload))` for a leaf, `(tag . (left right))` for an operation. */
+function mknode(): SSAFunction<SchemeNode> {
+  return fn("mknode")
+    .block("entry", (b) => {
+      const leaf = b.prim("num-eq", "p0", b.const(0));
+      b.branch(leaf, "isLeaf", "isNode");
+    })
+    .block("isLeaf", (b) => {
+      // `(mkvar 1)`, which is `(cons 1 (cons 1 ()))`.
+      b.ret(b.cons(b.const(1), b.cons(b.const(1), b.nil())));
+    })
+    .block("isNode", (b) => {
+      const even = b.prim("num-eq", b.prim("mod", "p0", b.const(2)), b.const(0));
+      b.branch(even, "add", "mul");
+    })
+    .block("add", (b) => {
+      const l = b.call(b.funcRef("mknode"), [b.prim("sub", "p0", b.const(1))]);
+      const r = b.call(b.funcRef("mknode"), [b.prim("sub", "p0", b.const(1))]);
+      b.ret(b.cons(b.const(2), b.cons(l, b.cons(r, b.nil()))));
+    })
+    .block("mul", (b) => {
+      const l = b.call(b.funcRef("mknode"), [b.prim("sub", "p0", b.const(1))]);
+      const r = b.call(b.funcRef("mknode"), [b.prim("sub", "p0", b.const(1))]);
+      b.ret(b.cons(b.const(3), b.cons(l, b.cons(r, b.nil()))));
+    })
+    .done();
+}
+
+/** Look a name up in an association list, by a loop. */
+function lookup(): SSAFunction<SchemeNode> {
+  return fn("lookup")
+    .block("entry", (b) => {
+      b.copy("i", "p0");
+      b.copy("env", "p1");
+      b.jump("loop");
+    })
+    .block("loop", (b) => {
+      const empty = b.prim("null?", "env");
+      b.branch(empty, "missing", "check");
+    })
+    .block("missing", (b) => b.ret(b.const(0)))
+    .block("check", (b) => {
+      const pair = b.car("env");
+      const hit = b.prim("num-eq", "i", b.car(pair));
+      b.branch(hit, "found", "next");
+    })
+    .block("found", (b) => b.ret(b.cdr(b.car("env"))))
+    .block("next", (b) => {
+      b.copy("env", b.cdr("env"));
+      b.jump("loop");
+    })
+    .done();
+}
+
+/** The evaluator: the same tag dispatch and the same recursion, with direct calls. */
+function ev(): SSAFunction<SchemeNode> {
+  return fn("ev")
+    .block("entry", (b) => {
+      const tag = b.car("p0");
+      const isLit = b.prim("num-eq", tag, b.const(0));
+      b.branch(isLit, "lit", "notLit");
+    })
+    .block("lit", (b) => b.ret(b.car(b.cdr("p0"))))
+    .block("notLit", (b) => {
+      const tag = b.car("p0");
+      const isVar = b.prim("num-eq", tag, b.const(1));
+      b.branch(isVar, "variable", "notVar");
+    })
+    .block("variable", (b) => b.ret(b.call(b.funcRef("lookup"), [b.car(b.cdr("p0")), "p1"])))
+    .block("notVar", (b) => {
+      const tag = b.car("p0");
+      const isAdd = b.prim("num-eq", tag, b.const(2));
+      b.branch(isAdd, "add", "mul");
+    })
+    .block("add", (b) => {
+      const l = b.call(b.funcRef("ev"), [b.car(b.cdr("p0")), "p1"]);
+      const r = b.call(b.funcRef("ev"), [b.car(b.cdr(b.cdr("p0"))), "p1"]);
+      b.ret(b.prim("mod", b.prim("add", l, r), b.const(1000003)));
+    })
+    .block("mul", (b) => {
+      const l = b.call(b.funcRef("ev"), [b.car(b.cdr("p0")), "p1"]);
+      const r = b.call(b.funcRef("ev"), [b.car(b.cdr(b.cdr("p0"))), "p1"]);
+      b.ret(b.prim("mod", b.prim("mul", l, r), b.const(1000003)));
+    })
+    .done();
+}
+
+/** `acc += ev(expr, env)`, twenty times, as a loop. */
+function repeatEval(): SSAFunction<SchemeNode> {
+  return fn("repeatEval")
+    .block("entry", (b) => {
+      b.copy("n", "p0");
+      // The environment is built once, outside the loop. Building it inside would add an
+      // allocation per iteration that the Scheme version does not do.
+      b.copy("env", b.cons(b.cons(b.const(1), b.const(3)), b.nil()));
+      b.copy("acc", b.const(0));
+      b.jump("loop");
+    })
+    .block("loop", (b) => {
+      const done = b.prim("num-eq", "n", b.const(0));
+      b.branch(done, "done", "body");
+    })
+    .block("done", (b) => b.ret("acc"))
+    .block("body", (b) => {
+      const v = b.call(b.funcRef("ev"), ["p1", "env"]);
+      b.copy("acc", b.prim("add", "acc", v));
+      b.copy("n", b.prim("sub", "n", b.const(1)));
+      b.jump("loop");
+    })
+    .done();
+}
+
+function miniEvalMain(): SSAFunction<SchemeNode> {
+  return fn("$main")
+    .block("entry", (b) => {
+      const expr = b.call(b.funcRef("buildExpr"), []);
+      const v = b.call(b.funcRef("repeatEval"), [b.const(20), expr]);
+      printValue(b, v);
+      b.ret();
+    })
+    .done();
+}
+
 // ───────────────────────── The corpus ─────────────────────────
 
 export interface Baseline {
@@ -370,6 +542,14 @@ export const BASELINES: readonly Baseline[] = [
   { name: "list-sum", functions: [build(), sumList(), listSumMain()] },
   { name: "map-fold", functions: [sumSquares(), mapFoldMain()] },
   { name: "closures", functions: [adder(), addN(), applyN(), closuresMain()] },
+  { name: "tak", functions: [tak(), takMain()] },
+  // The baseline for `cpstak` is direct-style `tak`: the same function, written the way a C
+  // programmer writes it. That is what the benchmark is asking — what CPS costs.
+  { name: "cpstak", functions: [tak(), takMain()] },
+  {
+    name: "mini-eval",
+    functions: [buildExpr(), mknode(), lookup(), ev(), repeatEval(), miniEvalMain()],
+  },
   {
     name: "insertion-sort",
     functions: [buildScrambled(), insert(), sort(), sumList(), weighted(), insertionSortMain()],
