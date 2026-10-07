@@ -103,7 +103,8 @@ and wrong at runtime.
 
 ```
 source -> reader -> surface -> S0
-       -> nanopass passes -> S14
+       -> nanopass passes -> S14          (one construct per pass; deforest fuses a
+                                           producer into its consumer)
        -> lowering -> basic blocks
        -> self tail calls become jumps
        -> Braun -> SSA
@@ -116,9 +117,13 @@ The pipeline is checked in two shapes, and both are needed:
 - **fused and unfused agree**, byte for byte, over the fixture corpus
 - **optimized and unoptimized agree**, in output and in value, with the IR verified after every pass
 
-The interpreter is the oracle. There is no second evaluator: it runs the optimized SSA, and the
-expected values in `fixtures/programs.ts` are worked out by hand from the source. That is why the
-fixtures are small and each says what it covers.
+The expected values in `fixtures/programs.ts` and `bench/programs.ts` are worked out **by hand** from
+the source. That is the oracle, and it is why the programs are small and each says what it covers.
+
+Two things then have to agree with it, and neither can be derived from the other: the compiled path,
+and `tree-interp.ts`, which runs the same source with no compiler at all. An error in the compiler
+that happened to match an error in the interpreter would still be caught, because both are checked
+against the hand-derived values rather than against each other.
 
 `bench/` is the exception to "small": it is where the question the project exists to ask — does
 functional code run like C — is answered. Four rows per program, and they are not four measurements

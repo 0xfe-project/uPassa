@@ -11,11 +11,10 @@ There is no separate CFG layer: a graph of basic blocks is what an SSA function 
 
 The framework ships **algorithms and infrastructure**, not a compiler. Languages, passes, and the lowering between layers are the user's.
 
-## Install
+## Status
 
-```bash
-pnpm add upassa
-```
+Not published. `package.json` is `private: true`; this repository is the framework
+and its own test suite, and nothing here is on a registry yet.
 
 ## nanopass: tree rewriting
 
@@ -32,6 +31,8 @@ const L0 = language({
       Int: { value: "number" },
       Var: { name: "string" },
       Add: { left: "Expr", right: "Expr" },
+      Lambda: { param: "string", body: "Expr" },
+      App: { func: "Expr", arg: "Expr" },
       Let: { name: "string", val: "Expr", body: "Expr" },
     },
   },
@@ -75,6 +76,27 @@ const desugarLet = buildWalker(desugarLetPass).run;
 
 The walker is generated from the language declarations. Handlers you do not
 write are handled automatically (identity / structural recursion).
+
+### Fusing a run of passes
+
+A contiguous run of passes can be collapsed into **one traversal** instead of one
+per pass:
+
+```typescript
+import { canFuse, buildFusedGroup } from "upassa/nanopass";
+
+if (canFuse([p1, p2, p3])) {
+  const fused = buildFusedGroup([p1, p2, p3]);
+  const out = fused.run(input);
+}
+```
+
+`canFuse` requires the passes to agree on their nonterminal names and to thread no
+extra values. It is a **necessary** condition, not a sufficient one: fusion changes
+evaluation order, and whether that is safe depends on what each pass inspects. The
+guarantee comes from checking, so check — run the pipeline both ways and compare the
+output. `e2e/nanopass/tests/fusion.test.ts` is the worked example, and it is the
+reason a silent deletion of this feature was found at all.
 
 ## ssa: graph optimization
 
@@ -198,6 +220,7 @@ e2e/            Framework tests (not shipped)
   ssa/          Test IR, tests, scaling bench
   scheme/       A micro-Scheme compiler written on both layers, run by an
                 interpreter, with benchmarks against hand-written baselines
+                and against the same source run with no compiler at all
 ```
 
 ## Development
@@ -210,5 +233,5 @@ pnpm test:nanopass     # Nanopass tests
 pnpm test:ssa          # SSA tests
 pnpm bench:nanopass    # Scaling: a walk must be linear in the tree
 pnpm bench:ssa         # Scaling: an analysis must be linear in the block count
-pnpm bench:scheme      # Unoptimized vs optimized vs hand-written C-style SSA
+pnpm bench:scheme      # Interpreted vs compiled vs optimized vs hand-written SSA
 ```
