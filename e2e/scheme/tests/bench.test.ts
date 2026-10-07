@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { report } from "../bench/report.ts";
+import { report, work } from "../bench/report.ts";
 import { BASELINES, baselineModule, BASELINE_ENTRY } from "../bench/baselines.ts";
 import { verifySSASafe } from "../../../src/ssa/verify.ts";
 import { schemeOps } from "../ir.ts";
@@ -61,6 +61,30 @@ describe("the report says what it claims", () => {
 
   test("the hand-written entry point exists in every baseline", () => {
     for (const b of BASELINES) expect(baselineModule(b.name).has(BASELINE_ENTRY)).toBe(true);
+  });
+});
+
+describe("the report states which way each comparison went", () => {
+  // A ratio with no stated direction gets read the wrong way. The first version of the report
+  // labelled a division "optimized/hand-written" while dividing the other way round, which turned
+  // the worst result in the corpus into the best-looking one.
+  test("fewer instructions is reported as fewer", () => {
+    expect(work(1000, 500)).toBe("2.00x fewer instructions");
+  });
+
+  test("more instructions is reported as more", () => {
+    expect(work(1000, 2000)).toBe("2.00x more instructions");
+  });
+
+  test("a difference too small to be one is not reported as a difference", () => {
+    expect(work(600_000, 600_001)).toBe("the same");
+  });
+
+  test("the corpus's worst result reads as a loss", () => {
+    const mapFold = REPORTS.find((r) => r.name === "map-fold")!;
+    const optimized = mapFold.rows.find((r) => r.label === "optimized")!;
+    const handwritten = mapFold.rows.find((r) => r.label === "hand-written")!;
+    expect(work(handwritten.instructions, optimized.instructions)).toMatch(/more instructions/);
   });
 });
 

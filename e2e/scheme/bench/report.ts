@@ -18,6 +18,10 @@
  *
  * The expected value is checked for every row. A row that computed something else would otherwise
  * look like a very fast result.
+ *
+ * Comparisons are stated as what the optimized row does against a baseline, never as a bare ratio:
+ * fewer instructions is less work, and a ratio whose direction is only implied gets read the wrong
+ * way — which is exactly what happened to this file's first version.
  */
 
 import { run } from "../interp.ts";
@@ -95,10 +99,16 @@ export function format(reports: readonly BenchmarkReport[]): string {
       );
     }
 
-    const [plain, optimized, handwritten] = r.rows as [Row, Row, Row];
+    const plain = r.rows.find((x) => x.label === "unoptimized")!;
+    const optimized = r.rows.find((x) => x.label === "optimized")!;
+    const handwritten = r.rows.find((x) => x.label === "hand-written")!;
+
+    // Fewer instructions is less work, and the comparison always says which way it went. A bare
+    // ratio does not: this line said "optimized/hand-written" while dividing the other way round,
+    // which turned a 6x loss into a 6x win for anyone reading it.
     lines.push(
-      `  ${pad("", 14)}optimized/unoptimized ${ratio(plain.instructions, optimized.instructions)}` +
-        `   optimized/hand-written ${ratio(handwritten.instructions, optimized.instructions)}`,
+      `  ${pad("", 14)}vs unoptimized: ${work(plain.instructions, optimized.instructions)}` +
+        `   vs hand-written: ${work(handwritten.instructions, optimized.instructions)}`,
     );
     lines.push("");
   }
@@ -106,10 +116,15 @@ export function format(reports: readonly BenchmarkReport[]): string {
   return lines.join("\n");
 }
 
-/** `to / from`, as `n×`. */
-function ratio(from: number, to: number): string {
-  if (to === 0) return "n/a";
-  return `${(from / to).toFixed(2)}×`;
+/** What `value` costs against `baseline`. Fewer instructions is less work. */
+export function work(baseline: number, value: number): string {
+  if (baseline === 0 || value === 0) return "n/a";
+  const ratio = value / baseline;
+  // A difference below half a percent is not a difference. Saying "1.00x more" for one instruction
+  // out of 600,000 reads as a finding when it is rounding.
+  if (Math.abs(ratio - 1) < 0.005) return "the same";
+  if (ratio < 1) return `${(baseline / value).toFixed(2)}x fewer instructions`;
+  return `${ratio.toFixed(2)}x more instructions`;
 }
 
 if (import.meta.main) {
