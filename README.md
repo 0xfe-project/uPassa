@@ -5,7 +5,9 @@ A meta-framework for building language frontends in TypeScript.
 Two layers, independent:
 
 - **nanopass** — functional tree rewriting. Declare languages, declare passes, get type-safe walkers generated from the declarations.
-- **ssa** — graph-based optimization infrastructure. Build SSA from a control-flow graph, compute analyses, run passes.
+- **ssa** — graph-based optimization infrastructure. Braun SSA construction, dominator trees, loop detection, use-def chains, a pass manager.
+
+There is no separate CFG layer: a graph of basic blocks is what an SSA function *is*.
 
 The framework ships **algorithms and infrastructure**, not a compiler. Languages, passes, and the lowering between layers are the user's.
 
@@ -94,16 +96,49 @@ The framework's algorithms (`toSSA`, `buildDomTree`, `detectLoops`,
 `buildUseDefChains`, `verifySSA`) are generic over your extension. They only
 look at the control-flow nodes; your instructions flow through untouched.
 
+### Telling the framework about your operands
+
+The framework cannot know which field of your instruction is a destination.
+You say so once, with `SSAOops<T>`:
+
+```typescript
+import type { SSAOps } from "upassa/ssa";
+
+const ops: SSAOps<MyInstr> = {
+  def: (i) => ("dest" in i ? i.dest : undefined),
+  uses: (i) => (i.type === "add" ? [i.left, i.right] : []),
+  setDef: (i, name) => { if ("dest" in i) i.dest = name; },
+  setUse: (i, from, to) => {
+    if (i.type !== "add") return;
+    if (i.left === from) i.left = to;
+    if (i.right === from) i.right = to;
+  },
+};
+```
+
+Every algorithm that reads or rewrites your operands takes it. Phis, jumps,
+branches and returns the framework handles itself.
+
 ### SSA construction (Braun)
 
 ```typescript
-import { toSSA, type PreSSAFunction } from "upassa/ssa";
+import { toSSA } from "upassa/ssa";
 
-const ssa = toSSA(preFunc);
+const ssa = toSSA(fn, ops);   // SSAFunction<T> in, SSAFunction<T> out
 ```
 
-Braun's algorithm inserts phi nodes lazily during renaming — no dominance
-frontier computation needed upfront.
+One shape in, the same shape out. Operands are **variable names** on the way in
+and SSA value names on the way out: an instruction's `dest` is read as the name
+of a variable, and a value produced in two places is one variable with two
+definitions. **Do not place phis yourself** — the walk skips phis it did not
+create, so one placed by hand is silently ignored and its operands go stale.
+
+Instructions are **ordered**, which is what makes `x = 1; x = 2` in one block two
+different values and `x = x + 1` read the old one. A read that no definition
+reaches stands for itself — that is how parameters and globals pass through.
+
+Braun inserts phi nodes lazily during renaming — no dominance frontier
+computation needed upfront.
 
 ### Passes and the pass manager
 
@@ -132,7 +167,7 @@ iteration cap).
 
 - **No optimization passes.** DCE, SCCP, LICM, vectorization — those are
   yours to write (or reuse from elsewhere). The framework gives you the
-  infrastructure to write them.
+  infrastructure to write them. `e2e/scheme/ssa-passes/` is a worked example.
 - **No lowering between layers.** Going from nanopass output to SSA input is
   a user-written transformation. Every language lowers differently.
 - **No backend.** Instruction selection, register allocation, code emission
@@ -159,6 +194,10 @@ src/
       loops.ts    Loop recognition
       usedef.ts   Use-def chains
 e2e/            Framework tests (not shipped)
+  nanopass/     Languages, passes, fixtures, tests, scaling bench
+  ssa/          Test IR, tests, scaling bench
+  scheme/       A micro-Scheme compiler written on both layers, run by an
+                interpreter, with benchmarks against hand-written baselines
 ```
 
 ## Development
@@ -169,4 +208,7 @@ pnpm fmt               # Format
 pnpm test              # Run all tests
 pnpm test:nanopass     # Nanopass tests
 pnpm test:ssa          # SSA tests
+pnpm bench:nanopass    # Scaling: a walk must be linear in the tree
+pnpm bench:ssa         # Scaling: an analysis must be linear in the block count
+pnpm bench:scheme      # Unoptimized vs optimized vs hand-written C-style SSA
 ```
