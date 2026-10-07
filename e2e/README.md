@@ -1,90 +1,80 @@
-# e2e: uPassa test suite
+# e2e
 
-End-to-end tests for the two framework layers:
-- **nanopass**: functional tree rewriting
-- **ssa**: graph-based optimization
+Tests for the two framework layers. This is the framework's own test suite — it exercises the
+framework implementations, not a shipped compiler. Test programs are vehicles for that.
 
-These tests are the framework's own tests — they exercise the framework
-implementations, not a "reference compiler". The test programs (fixtures)
-are just vehicles for that.
+## Naming conventions
+
+| Kind | Pattern | Example |
+|------|---------|---------|
+| Language declaration | `*.lang.ts` | `langs/toy.lang.ts` |
+| Pass, cross-language | `*.<from>-><to>.pass.ts` | `passes/begin-elim.T0->T1.pass.ts` |
+| Pass, same language | `*.<lang>.pass.ts` | `passes/fold-const.T2.pass.ts` |
+| Test | `*.test.ts` | `tests/fusion.test.ts` |
+| Fixture / corpus | `*.ts` under `fixtures/` | `fixtures/toy-corpus.ts` |
+
+Notes:
+
+- A pass file exports both the runnable function and the pass **spec**. Fusion needs the spec;
+  everything else needs the function. Export both rather than re-deriving one from the other.
+- No `*.md.ts`. Documentation is `*.md`.
+- No folder that exists only to hold a README. If a folder has no code yet, it does not exist yet.
 
 ## Layout
 
 ```
 e2e/
-├── nanopass/          # Tree rewriting tests
-│   ├── languages.ts   # Language chain L0 → L10
-│   ├── passes.ts      # Transformation passes
-│   ├── pipeline.ts    # Composed pipeline
-│   ├── fixtures.ts    # Test programs
-│   └── example.ts     # Runnable demo
-├── ssa/               # Graph optimization tests
-│   ├── passes.ts      # Test optimization passes
-│   ├── pipeline.ts    # Composed optimization pipeline
-│   ├── fixtures.ts    # Test CFGs
-│   └── tests/         # Unit tests
-└── integration/       # End-to-end tests
-    └── tests/         # Full pipeline tests
+  nanopass/
+    langs/      *.lang.ts        language declarations
+    passes/     *.pass.ts        transformations
+    fixtures/   *.ts             corpora
+    tests/      *.test.ts        framework tests
+  ssa/
+    passes/     *.ts             test optimization passes (not framework deliverables)
+    fixtures/   *.ts             hand-built SSA functions
+    tests/      *.test.ts
+  integration/
+    tests/                       end-to-end: source -> nanopass -> SSA -> interpreter
 ```
+
+## What the nanopass tests must cover
+
+The framework claims: declare a language and a pass, and get a correct, type-safe, **fusable**
+walker. So the tests are about those claims, not about any particular compiler:
+
+- **codegen correctness** — a pass transforms what it says it transforms
+- **fusion** — a fused run produces the same tree as running the passes one at a time
+  (`tests/fusion.test.ts`; this is the guardrail that fusion's correctness rests on)
+- **type safety** — wrong handlers are rejected at compile time (`@ts-expect-error` negatives)
+- **extra values** — the threading model (a child's returned extra feeds the next sibling)
+- **identity reuse** — an unchanged subtree keeps its reference
+- **derive** — removed productions are gone from the type
+- **scaling** — pass execution is linear in input size
+
+## What the SSA tests must cover
+
+The framework claims: Braun produces correct SSA, the analyses are correct, and the pass manager
+schedules and invalidates correctly. So:
+
+- **Braun** — phi placement, and `verifySSA` accepts the result
+- **dominator tree** — against known immediate dominators
+- **loops**, **use-def chains**
+- **pass manager** — analysis caching, invalidation, fixed-point iteration
+- **scaling** — linear
+
+## What is not here
+
+- No production optimization passes. The SSA passes under `ssa/passes/` exist to test the pass
+  infrastructure; they are not deliverables.
+- No lowering from nanopass to SSA as a framework feature. That bridge is user code, written in
+  `integration/`.
 
 ## Running
 
 ```bash
-pnpm test              # All tests
-pnpm test:nanopass     # Nanopass tests only
-pnpm test:ssa          # SSA tests only
-pnpm example:nanopass  # Run the nanopass demo
+pnpm test              # everything
+pnpm test:nanopass     # this layer only
+pnpm test:ssa
+pnpm bench:nanopass    # scaling checks (log-log slope)
+pnpm bench:ssa
 ```
-
-## Nanopass layer
-
-Tests the tree rewriting framework:
-
-- **Language declarations** (`language()`, `derive()`)
-- **Pass declarations** (`pass()` with rules)
-- **Codegen** (generated walkers)
-- **Transformations** (desugar, explicit refs, flatten)
-
-### Language chain
-
-```
-L0  Surface language (let bindings)
- ↓  desugar-let
-L1  Lambda application
- ↓  explicit-refs
-L2  Explicit references (binding depth)
- ↓  flatten
-L3  Flattened (temporaries)
-```
-
-The chain continues to L10 (declared in `languages.ts`) covering closure
-conversion, lambda lifting, and control flow lowering. Only L0–L3 have
-implemented passes so far.
-
-## SSA layer
-
-Tests the graph optimization framework:
-
-- **Braun construction** (imperative CFG → SSA)
-- **Dominator tree** (Lengauer-Tarjan)
-- **Use-def chains**
-- **Loop recognition**
-- **Pass manager** (scheduling, analysis caching, invalidation)
-
-### Test passes
-
-These are **test passes only**, not framework deliverables:
-
-| Pass | Purpose |
-|------|---------|
-| DCE | Remove unused instructions |
-| SCCP | Fold constants |
-| SimplifyCFG | Remove unreachable blocks |
-| CopyProp | Propagate copies |
-| Mem2Reg | (stub) Promote memory to registers |
-
-## What is NOT tested here
-
-- The framework does not ship production optimization passes
-- The framework does not ship a complete compiler
-- Lowering from nanopass output to SSA is the user's responsibility
