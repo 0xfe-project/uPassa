@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from "vitest";
 import { runSource } from "../run.ts";
+import { compile } from "../pipeline.ts";
 import { BENCHMARKS } from "../bench/programs.ts";
 
 const MAP_FOLD = BENCHMARKS.find((b) => b.name === "map-fold")!.source;
@@ -26,13 +27,35 @@ ${build}
 
 const LIST = "()";
 
+/** The S13 tree, so a test can look at the shape a fusion produced. */
+function compileTree(source: string): {
+  defs: { name: string; body: { type: string; [k: string]: unknown } }[];
+} {
+  return compile(source) as unknown as {
+    defs: { name: string; body: { type: string; [k: string]: unknown } }[];
+  };
+}
+
+/** Visit every node, without depending on the language declaration. */
+function walk(x: unknown, f: (n: { type: string; [k: string]: unknown }) => void): void {
+  if (Array.isArray(x)) {
+    for (const y of x) walk(y, f);
+    return;
+  }
+  if (x === null || typeof x !== "object") return;
+  const o = x as { type?: unknown; [k: string]: unknown };
+  if (typeof o.type === "string") f(o as { type: string; [k: string]: unknown });
+  for (const [k, v] of Object.entries(o)) if (k !== "__lang__") walk(v, f);
+}
+
 describe("deforestation removes the intermediate list", () => {
   test("the mapped list is never built", () => {
     const withFusion = runSource(MAP_FOLD, [], {});
     const without = runSource(MAP_FOLD, [], { without: ["deforest"] });
-    // `build 300` is 300 conses either way. The mapped list is 300 more that only exist without
-    // the rewrite.
-    expect(without.stats.allocs - withFusion.stats.allocs).toBe(300);
+    // 300 conses for the mapped list, plus the two closure literals — which, once their bodies are
+    // inlined into the loop, never need to exist. `build 300` is 300 conses either way.
+    expect(without.stats.allocs - withFusion.stats.allocs).toBe(302);
+    expect(withFusion.stats.allocs).toBe(300);
   });
 
   test("and it is faster for it", () => {
@@ -46,6 +69,39 @@ describe("deforestation removes the intermediate list", () => {
     const without = runSource(MAP_FOLD, [], { optimize: true, without: ["deforest"] });
     expect(withFusion.output).toEqual(without.output);
     expect(withFusion.output).toEqual(["9045050"]);
+  });
+
+  test("the two function arguments are inlined into the loop when they are literals", () => {
+    // The call site says `(fold (lambda (a b) (+ a b)) 0 (map (lambda (x) (* x x)) xs))`, so the
+    // fused loop can have both bodies substituted in and make no calls at all. That is what a C
+    // programmer writes, and it is the difference between 4.5x and 3.2x the C shape.
+    const withFusion = runSource(MAP_FOLD, [], { optimize: true });
+    const generic = runSource(MAP_FOLD, [], { optimize: true, without: ["deforest"] });
+    expect(withFusion.stats.instructions).toBeLessThan(generic.stats.instructions);
+
+    // No call is left in the fused loop.
+    const tree = compileTree(MAP_FOLD);
+    const fused = tree.defs.find((d) => d.name.startsWith("$fused"));
+    expect(fused).toBeDefined();
+    const calls: string[] = [];
+    walk(fused!.body, (n) => {
+      if (n.type === "Call" && (n.fn as { name?: string }).name !== fused!.name) calls.push("call");
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("a closure that captures cannot be inlined, so it stays a call", () => {
+    // A capturing closure's body is written in terms of `f0, f1, ...`, slots the fused function
+    // does not have. Substituting it would produce a reference to a variable nothing binds.
+    const source = `
+(define (map f xs) (if (null? xs) () (cons (f (car xs)) (map f (cdr xs)))))
+(define (fold f acc xs) (if (null? xs) acc (fold f (f acc (car xs)) (cdr xs))))
+(define (scale k) (lambda (x) (* x k)))
+(print (fold (lambda (a b) (+ a b)) 0 (map (scale 3) (cons 1 (cons 2 (cons 3 ()))))))`;
+    const withFusion = runSource(source, [], { optimize: true });
+    const without = runSource(source, [], { optimize: true, without: ["deforest"] });
+    expect(withFusion.output).toEqual(without.output);
+    expect(withFusion.output).toEqual(["18"]);
   });
 
   test("a producer that does not agree on how to walk is left alone", () => {

@@ -144,15 +144,15 @@ function hasCall(e: E): boolean {
  * body makes no calls at all — `+` and `*` are primitives, so arithmetic qualifies. Anything else
  * is unknown, and unknown means no.
  */
-function knownPure(e: E, defs: ReadonlyMap<string, E>): boolean {
+function knownPure(e: E, defs: ReadonlyMap<string, Resolved>): boolean {
   if (e.type === "MakeClosure") {
     if (children(e).some(hasCall)) return false;
-    const body = defs.get(e.fn as string);
-    return body !== undefined && !hasCall(body);
+    const d = defs.get(e.fn as string);
+    return d !== undefined && !hasCall(d.body);
   }
   if (e.type === "Var") {
-    const body = defs.get(e.name as string);
-    return body !== undefined && !hasCall(body);
+    const d = defs.get(e.name as string);
+    return d !== undefined && !hasCall(d.body);
   }
   return false;
 }
@@ -165,9 +165,18 @@ const call = (fn: string, args: E[]): E => ({ type: "Call", fn: v(fn), args });
 interface Producer {
   readonly name: string;
   readonly params: string[];
+  /**
+   * The function applied to each element.
+   *
+   * Its own field rather than part of `extra`: it is what `elem` calls, and it is the thing that
+   * gets inlined away at a specialized call site. Treating it as an extra to pass through left a
+   * closure allocated per call for a function that had already been substituted into the loop.
+   */
+  readonly f: string;
+  /** Parameters the producer carries along untouched: `P(f, extra..., src)`. */
+  readonly extra: string[];
   /** The parameter being traversed. Always the last one. */
   readonly src: string;
-  readonly extra: string[];
   readonly test: E;
   readonly next: E;
   /** The element the producer puts in the list, in terms of all its parameters. */
@@ -191,9 +200,10 @@ interface Consumer {
 function asProducer(d: S13_Def): Producer | undefined {
   if (d.type !== "DefFun") return undefined;
   const params = d.params;
-  if (params.length === 0) return undefined;
+  if (params.length < 2) return undefined;
+  const f = params[0]!;
   const src = params[params.length - 1]!;
-  const extra = params.slice(0, -1);
+  const extra = params.slice(1, -1);
 
   const body = d.body as unknown as E;
   if (body.type !== "If") return undefined;
@@ -212,7 +222,7 @@ function asProducer(d: S13_Def): Producer | undefined {
   const step = selfStep(tail, d.name, params);
   if (step === undefined) return undefined;
 
-  return { name: d.name, params, src, extra, test: cond, next: step, elem };
+  return { name: d.name, params, f, extra, src, test: cond, next: step, elem };
 }
 
 /** `C(f, extra..., acc, src) = if (test src) acc (C f extra... (f acc (head src)) (next src))` */
@@ -283,38 +293,116 @@ interface Fused {
 }
 
 /** Build the fused function for a consumer/producer pair. */
-function fuse(consumer: Consumer, producer: Producer): Fused {
-  const name = `$fused_${consumer.name}_${producer.name}`;
+/**
+ * A closure literal, resolved to its body.
+ *
+ * Only a capture-free one: the body of a closure that captures is written in terms of `f0, f1, ...`,
+ * which are slots the fused function does not have. Nothing here can supply them, so a capturing
+ * closure is left as an indirect call.
+ */
+interface Resolved {
+  readonly params: readonly string[];
+  readonly body: E;
+}
+
+/** A top-level function, by name: what it takes and what it does. */
+type DefBody = Resolved;
+
+function resolveClosure(e: E | undefined, bodies: ReadonlyMap<string, Resolved>): Resolved | undefined {
+  if (e === undefined || e.type !== "MakeClosure") return undefined;
+  const free = e.free;
+  if (Array.isArray(free) && free.length > 0) return undefined;
+  return bodies.get(e.fn as string);
+}
+
+/**
+ * Build the fused function.
+ *
+ * Two shapes, and which one is produced depends only on what is known at the call site:
+ *
+ *   generic       `$fused_fold_map(cf, ce, acc, src)` — the two functions stay parameters, and each
+ *                 element costs two indirect calls.
+ *   specialized   `$fused_fold_map$fn3$fn4(acc, src)` — the two closure literals' bodies are
+ *                 substituted in, so the loop has no calls in it at all. This is what a C
+ *                 programmer writes, and it is the difference between 4.5x and parity.
+ *
+ * Specializing is what the call site already knows: the functions are literals written right there.
+ * It is not a general inliner — a function passed as a variable, or a capturing closure, keeps the
+ * generic shape.
+ */
+function fuse(
+  consumer: Consumer,
+  producer: Producer,
+  combine: Resolved | undefined,
+  combineName: string | undefined,
+  element: Resolved | undefined,
+  elementName: string | undefined,
+): Fused {
+  const specialized = combine !== undefined && element !== undefined;
+  // The name carries which closures were inlined. Two different pairs would otherwise produce the
+  // same name — one `$fused_fold_map$2$1` is indistinguishable from another — and the second would
+  // silently shadow the first.
+  const suffix = specialized ? `$${combineName}$${elementName}` : "";
+  const name = `$fused_${consumer.name}_${producer.name}${suffix}`;
+
   // Parameters are frame slots, not source names: `convert-closures` already renamed every
   // parameter to the slot it lives in, and the lowering binds a function's parameters to their own
   // names. A fused function is synthesized after that point, so it has to follow the same
   // convention — a `$src` here is a name nothing ever binds.
+  //
+  // In the specialized shape the two function slots are gone, so the frame is shorter: the extras
+  // the producer carries, then the accumulator, then the source.
+  // The frame is the producer's extras, then the accumulator, then the source — preceded by the two
+  // function slots when they were not inlined away.
+  const base = specialized ? 0 : 2;
   const cf = "p0";
-  const extraParams = producer.extra.map((_, i) => `p${i + 1}`);
-  const cacc = `p${producer.extra.length + 1}`;
-  const csrc = `p${producer.extra.length + 2}`;
+  const ce = "p1";
+  const extraParams = producer.extra.map((_, i) => `p${i + base}`);
+  const cacc = `p${producer.extra.length + base}`;
+  const csrc = `p${producer.extra.length + base + 1}`;
 
   // Everything the producer's element says is in terms of the producer's own parameters; the
   // traversed one becomes the fused function's `src`, and the rest become the fused extras.
   const elemMap = new Map<string, E>();
+  elemMap.set(producer.f, v(ce));
   producer.extra.forEach((p, i) => elemMap.set(p, v(extraParams[i]!)));
   elemMap.set(producer.src, v(csrc));
 
   const srcMap = new Map<string, E>([[consumer.src, v(csrc)]]);
 
+  /** The producer's element for one item of the source. */
+  const elemExpr = (): E => {
+    if (element === undefined) return subst(producer.elem, elemMap);
+    // The element function applied to the head of the source, inlined: its parameter is bound to
+    // the head, and everything else it says is its own body.
+    const head = { type: "Prim", op: "car", args: [v(csrc)] } as E;
+    const m = new Map<string, E>([[element.params[0]!, head]]);
+    return subst(element.body, m);
+  };
+
+  /** The new accumulator, in terms of the old one. */
+  const combineExpr = (): E => {
+    const elem = elemExpr();
+    if (combine === undefined) return { type: "Call", fn: v(cf), args: [v(cacc), elem] };
+    const m = new Map<string, E>([
+      [combine.params[0]!, v(cacc)],
+      [combine.params[1]!, elem],
+    ]);
+    return subst(combine.body, m);
+  };
+
+  const recurseArgs = specialized
+    ? [...extraParams.map(v), combineExpr(), subst(consumer.next, srcMap)]
+    : [v(cf), v(ce), ...extraParams.map(v), combineExpr(), subst(consumer.next, srcMap)];
+
   const body: E = {
     type: "If",
     cond: subst(consumer.test, srcMap),
     then: v(cacc),
-    alt: call(name, [
-      v(cf),
-      ...extraParams.map(v),
-      { type: "Call", fn: v(cf), args: [v(cacc), subst(producer.elem, elemMap)] },
-      subst(consumer.next, srcMap),
-    ]),
+    alt: call(name, recurseArgs),
   };
 
-  const params = [cf, ...extraParams, cacc, csrc];
+  const params = specialized ? [...extraParams, cacc, csrc] : [cf, ce, ...extraParams, cacc, csrc];
   return {
     def: { type: "DefFun", name, params, body } as unknown as S13_Def,
     params,
@@ -324,7 +412,7 @@ function fuse(consumer: Consumer, producer: Producer): Fused {
 interface Ctx {
   readonly producers: Map<string, Producer>;
   readonly consumers: Map<string, Consumer>;
-  readonly bodies: Map<string, E>;
+  readonly bodies: Map<string, Resolved>;
   /** One fused function per pair, shared by every call site that fuses the same way. */
   readonly fused: Map<string, Fused>;
   readonly added: S13_Def[];
@@ -336,7 +424,7 @@ const spec = pass({
   sig: sig({
     producers: new Map<string, Producer>(),
     consumers: new Map<string, Consumer>(),
-    bodies: new Map<string, E>(),
+    bodies: new Map<string, Resolved>(),
     fused: new Map<string, Fused>(),
     added: [] as S13_Def[],
   } satisfies Ctx),
@@ -348,7 +436,7 @@ const spec = pass({
       Program: (n, rec, ctx): readonly [S13_Program, Ctx] => {
         for (const d of n.defs) {
           if (d.type !== "DefFun") continue;
-          ctx.bodies.set(d.name, d.body as unknown as E);
+          ctx.bodies.set(d.name, { params: d.params, body: d.body as unknown as E });
           const p = asProducer(d);
           if (p !== undefined) ctx.producers.set(p.name, p);
           const c = asConsumer(d);
@@ -405,23 +493,43 @@ const spec = pass({
         // program's output. See the note at the top: this is not a heuristic, it is the difference
         // between a rewrite and a miscompile.
         const headArgs = args.slice(0, -2);
-        const pureCombine = headArgs[0] !== undefined && knownPure(headArgs[0], ctx.bodies);
-        const pureElement = pargs[0] !== undefined && knownPure(pargs[0], ctx.bodies);
+        const combineArg = headArgs[0];
+        const elementArg = pargs[0];
+        const pureCombine = combineArg !== undefined && knownPure(combineArg, ctx.bodies);
+        const pureElement = elementArg !== undefined && knownPure(elementArg, ctx.bodies);
         if (!pureCombine && !pureElement) return [node as unknown as S13_Expr, ctx];
 
-        const key = `${consumer.name}|${producer.name}`;
+        // Both functions are literals written at this call site, so their bodies can be substituted
+        // into the loop. See `fuse`.
+        const combine = resolveClosure(combineArg, ctx.bodies);
+        const element = resolveClosure(elementArg, ctx.bodies);
+        const specialized = combine !== undefined && element !== undefined;
+
+        const key = specialized
+          ? `${consumer.name}|${producer.name}|${combineArg!.fn}|${elementArg!.fn}`
+          : `${consumer.name}|${producer.name}`;
         let f = ctx.fused.get(key);
         if (f === undefined) {
-          f = fuse(consumer, producer);
+          f = fuse(
+            consumer,
+            producer,
+            combine,
+            combineArg?.fn as string | undefined,
+            element,
+            elementArg?.fn as string | undefined,
+          );
           ctx.fused.set(key, f);
           ctx.added.push(f.def);
         }
 
-        const extraArgs = pargs.slice(0, -1);
+        // The two function slots are dropped from the call when they were inlined away, and the
+        // element function's slot is the producer's first parameter, not one of its extras.
+        const extraArgs = pargs.slice(1, -1);
         const srcArg = pargs[pargs.length - 1]!;
         const accArg = args[args.length - 2]!;
+        const fnArgs = specialized ? extraArgs : [...headArgs, elementArg!, ...extraArgs];
 
-        return [call(f.def.name, [...headArgs, ...extraArgs, accArg, srcArg]) as unknown as S13_Expr, ctx];
+        return [call(f.def.name, [...fnArgs, accArg, srcArg]) as unknown as S13_Expr, ctx];
       },
     },
   },

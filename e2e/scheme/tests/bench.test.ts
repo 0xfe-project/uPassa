@@ -116,9 +116,12 @@ describe("where the compiler stands", () => {
   });
 
   test("allocation-heavy functional code still costs several times the C shape", () => {
-    // The honest negative result: building an intermediate list and calling a closure per element
-    // is work the C-shaped version does not do, and no amount of SSA optimization removes it.
-    expect(ratio("map-fold")).toBeGreaterThan(4);
+    // The honest negative result, and a smaller one than it was: deforestation removed the mapped
+    // list and inlined both functions into the loop, which took this from 6.46x to about 3.2x. What
+    // is left is the list the *source* asked `build` for — a C programmer would have summed 1..n
+    // without building anything, and that is a different algorithm, not a missing optimization.
+    expect(ratio("map-fold")).toBeGreaterThan(3);
+    expect(ratio("map-fold")).toBeLessThan(4);
   });
 
   test("writing the same function in CPS costs instructions and a closure per step", () => {
