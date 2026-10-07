@@ -2,9 +2,9 @@
  * The benchmarks, checked as programs.
  *
  * A benchmark that silently stops computing the right thing is worse than no benchmark: it looks
- * like a very fast result. Every row of every report — unoptimized, optimized, hand-written — is
- * checked against the expected output, and the hand-written baselines are additionally checked to
- * be valid SSA, since nothing else verifies code that no pass produced.
+ * like a very fast result. Every row of every report — interpreted, compiled, optimized,
+ * hand-written — is checked against the expected output, and the hand-written baselines are
+ * additionally checked to be valid SSA, since nothing else verifies code that no pass produced.
  *
  * The report itself is produced once and reused. Running the corpus is the slow part, and it does
  * not depend on which assertion is looking at it.
@@ -20,23 +20,28 @@ const REPORTS = report();
 
 describe("every benchmark row computes the right thing", () => {
   for (const r of REPORTS) {
-    test(`${r.name}: all three rows print ${r.expected.join(", ")}`, () => {
-      expect(r.rows).toHaveLength(3);
+    test(`${r.name}: every row prints ${r.expected.join(", ")}`, () => {
+      expect(r.rows).toHaveLength(4);
       for (const row of r.rows) expect(row.output).toEqual([...r.expected]);
     });
   }
 });
 
 describe("the report says what it claims", () => {
-  test("every benchmark has an unoptimized, an optimized and a hand-written row", () => {
+  test("every benchmark has one row per question", () => {
     for (const r of REPORTS) {
-      expect(r.rows.map((row) => row.label)).toEqual(["unoptimized", "optimized", "hand-written"]);
+      expect(r.rows.map((row) => row.label)).toEqual([
+        "interpreted",
+        "compiled",
+        "optimized",
+        "hand-written",
+      ]);
     }
   });
 
   test("optimizing never costs instructions", () => {
     for (const r of REPORTS) {
-      const plain = r.rows.find((row) => row.label === "unoptimized")!;
+      const plain = r.rows.find((row) => row.label === "compiled")!;
       const optimized = r.rows.find((row) => row.label === "optimized")!;
       expect(optimized.instructions).toBeLessThanOrEqual(plain.instructions);
     }
