@@ -550,47 +550,303 @@ export function emitWalker(spec: WalkerSpec): string {
 
 /** Generate traverser source code for a single pass (trampoline version: descent doesn't use native stack). */
 export function emitWalkerTramp(spec: WalkerSpec): string {
-  return checked(emitWalkerTrampSrc(spec), `trampoline ${spec.from.id}->${spec.to.id}`);
+  return emitFusedGroupTramp([spec]);
+}
+
+/** Generate traverser source code for a fused group of passes (recursive version, fast). */
+export function emitFusedGroupRec(specs: readonly WalkerSpec[]): string {
+  const label = specs.map((x) => x.from.id).join(" -> ");
+  return checked(emitFusedGroupRecSrc(specs), `fused ${label}`);
+}
+
+/** Generate traverser source code for a fused group of passes (trampoline version, identity path uses no native stack). */
+export function emitFusedGroupTramp(specs: readonly WalkerSpec[]): string {
+  const label = specs.map((x) => x.from.id).join(" -> ");
+  return checked(emitFusedGroupTrampSrc(specs), `fused trampoline ${label}`);
+}
+
+// ───────────────────────── Pipeline fusion ─────────────────────────
+
+/**
+ * Fuse a group of "same nonterminal names, arity 0" passes into a single traversal.
+ *
+ * ── What the naive approach gets wrong
+ *
+ * The tempting formulation is `F_i(node) = F_{i+1}(P_i(node))`, with P_i's rec bound to F_i. The
+ * problem is that **child nodes get processed twice**: once via rec (running i..end), and once via
+ * the outer F_{i+1} (which recurses into the parent's result, and therefore walks the children again).
+ *
+ * ── What we actually do: deep + shallow
+ *
+ *   deep(node)   = run the first pass **deeply** on this node (children go through deep),
+ *                  then run passes 2..k **shallowly** on the result
+ *   shallow_i(v) = pass i's handler/identity on this one node, **children used as-is**
+ *                  (they have already been processed by the whole group)
+ *
+ * So each node is visited once per pass, and intermediate results stay in locals instead of being
+ * materialized into a tree.
+ *
+ * ── Where the semantics differ from "one pass at a time" (must be stated)
+ *
+ * Run A (unfused): P1 over the whole tree, then P2 over the whole tree, ... So P1, when it looks at
+ * a parent node, sees child nodes that have **only been processed by P1**.
+ * Run B (fused): P1 sees child nodes that have **been processed by the whole group**.
+ *
+ * So if P1's handler inspects a child's **tag**, and P2 changes that tag, the two runs are not
+ * equivalent. The two passes in this group (normalizeBegin / normalizePrimArity) only look at their
+ * own node's fields and the child **count**, never a child's tag — so it is safe.
+ *
+ * That check requires an analysis of "which passes inspect a child's tag", which **is not done**.
+ * So fusion is restricted to "same nonterminal names + arity 0", and every group is guarded by
+ * "byte-identical before and after fusion" (see the e2e assertions).
+ *
+ * One measured observation to go with it: none of the 12 passes in this pipeline has a handler that
+ * inspects a child's tag — they only look at their own node's fields, the child **count**, and a
+ * child's type (that is dispatch, not a semantic decision). So the whole fused chain comes out
+ * byte-identical. But that is an **observation, not a proof**; the guardrail stays.
+ */
+
+/**
+ * Recursive fusion: fast, but depth is bounded by the native stack.
+ *
+ * The trampoline version (emitFusedGroupTramp) turns the identity path into an iterative loop, so
+ * depth is unbounded, but it allocates one frame object per node — measured ~20% slower. Both are
+ * kept; the caller picks.
+ *
+ *   fast (recursive)   1.38x   identity chain depth ~13k
+ *   deep (trampoline)  0.79x   identity chain depth 2M+
+ *
+ * Default to the fast one: most inputs never get deep enough to overflow, and the 20% is paid by
+ * **every** input. Cases where input depth is not under your control (user-written source,
+ * machine-generated code) should pick the trampoline.
+ */
+function emitFusedGroupRecSrc(specs: readonly WalkerSpec[]): string {
+  if (specs.length === 0) throw new CodegenError("[fuse] empty group");
+  const first = specs[0]!;
+  // Fusion wires passes together by **nonterminal name**, so what matters is the name set, not the language id.
+  const ntNames = (sp: WalkerSpec): string => Object.keys(sp.from.rules).sort().join(",");
+  for (const sp of specs) {
+    if (ntNames(sp) !== ntNames(first)) {
+      throw new CodegenError(
+        `[fuse] nonterminal names in group don't match: ${sp.from.id} has ${ntNames(sp)}, ${first.from.id} has ${ntNames(first)}`,
+      );
+    }
+    if (sp.arity !== 0) {
+      throw new CodegenError(
+        `[fuse] ${sp.from.id}: a pass with arity ${sp.arity} cannot be fused (a pass with extra controls its own descent)`,
+      );
+    }
+    checkTagUniqueness(sp);
+  }
+  const lang = first.from.rules;
+
+  const nts = Object.keys(lang);
+  const fns: string[] = [];
+
+  // ── Shallow: one per pass, dispatching on tag
+  for (let i = 1; i < specs.length; i++) {
+    const sp = specs[i]!;
+    for (const nt of nts) {
+      const prods = sp.from.rules[nt] ?? {};
+      const cases: string[] = [];
+      for (const tag of Object.keys(prods)) {
+        const hasHandler = sp.rules[nt]?.[tag] !== undefined;
+        // Shallow: identity just returns the value as-is (children are already final), only handlers act
+        const body = hasHandler
+          ? `      out = finish(v, handlersList[${i}][${s(nt)}][${s(tag)}](v, idRec));`
+          : `      out = v;`;
+        cases.push(`    case ${s(tag)}: {\n${body}\n      break;\n    }`);
+      }
+      cases.push(
+        `    default:\n` +
+          `      throw new Error("[fuse] nonterminal ${nt} in ${sp.from.id} has no production " + v.type + " (" + whereOf(v) + ")");`,
+      );
+      fns.push(
+        `  function sh_${i}_${nt}(v) {\n    let out;\n    switch (v.type) {\n${cases.join("\n")}\n    }\n    return out;\n  }`,
+      );
+    }
+  }
+
+  // ── Deep: run pass 0 with children going through deep; afterwards shallow-run the rest
+  const shallowCalls = specs
+    .slice(1)
+    .map((_, idx) => `    v = sh_${idx + 1}_(v);`)
+    .join("\n");
+
+  for (const nt of nts) {
+    const prods = lang[nt]!;
+    const cases: string[] = [];
+    for (const [tag, inProd] of Object.entries(prods)) {
+      if (typeof inProd === "string") continue;
+      const hasHandler = first.rules[nt]?.[tag] !== undefined;
+      const body = hasHandler
+        ? `      v = finish(n, handlersList[0][${s(nt)}][${s(tag)}](n, deep));`
+        : emitDeepIdentity(first, nt, tag, inProd);
+      cases.push(`    case ${s(tag)}: {\n${body}\n      break;\n    }`);
+    }
+    cases.push(
+      `    default:\n` +
+        `      throw new Error("[fuse ${first.from.id}] nonterminal ${nt} has no production " + n.type + " (" + whereOf(n) + ")");`,
+    );
+    const shallow = specs.length > 1 ? shallowCalls.replace(/sh_(\d+)_\(/g, `sh_$1_${nt}(`) : "";
+    fns.push(
+      `  function deep_${nt}(n) {\n` +
+        `    let v;\n` +
+        `    const d = ++depth;\n` +
+        `    if (d > maxDepth) { maxDepth = d; deepest = n; }\n` +
+        `    switch (n.type) {\n${cases.join("\n")}\n    }\n` +
+        `    depth--;\n` +
+        (shallow ? `${shallow}\n` : ``) +
+        `    return v;\n  }`,
+    );
+  }
+
+  const byTag = Object.entries(first.from.rules)
+    .flatMap(([nt, prods]) => Object.keys(prods).map((tag) => `    ${s(tag)}: deep_${nt},`))
+    .join("\n");
+
+  return `// Generated by codegen (fused). Do not edit by hand. Change language declarations or pass rules, then regenerate.
+//   ${specs.map((x) => x.from.id).join(" -> ")}   (${specs.length} passes fused into 1 traversal)
+function build(handlersList, init) {
+  const LANG = ${s(first.to.id)};
+  const idRec = (x) => x;
+  let depth = 0;
+  let maxDepth = 0;
+  let deepest = null;
+
+  function whereOf(node) {
+    const m = node && node.__meta__;
+    if (!m) return "(no location info)";
+    return (m.file ?? "?") + ":" + (m.line ?? "?") + (m.col !== undefined ? ":" + m.col : "");
+  }
+
+  function guard(f) {
+    try { return f(); } catch (e) {
+      if (e instanceof RangeError && /stack/i.test(String(e.message))) {
+        const err = new Error("[fuse ${first.from.id}] input nested too deep: " + whereOf(deepest) + " (overflowed at depth " + maxDepth + ").");
+        err.name = "StackOverflow";
+        throw err;
+      }
+      throw e;
+    }
+  }
+
+  function finish(from, to) {
+    if (to === null || typeof to !== "object" || Array.isArray(to)) return to;
+    const meta = from !== null && from !== undefined ? from.__meta__ : undefined;
+    if (to.__lang__ === undefined) to.__lang__ = LANG;
+    if (to.__meta__ === undefined && meta !== undefined) to.__meta__ = meta;
+    for (const k of Object.keys(to)) {
+      if (k === "__meta__" || k === "__lang__") continue;
+      stampFresh(to[k], meta);
+    }
+    return to;
+  }
+
+  function stampFresh(x, meta) {
+    if (x === null || typeof x !== "object") return;
+    if (Array.isArray(x)) { for (const y of x) stampFresh(y, meta); return; }
+    if (x.__lang__ !== undefined) return;
+    x.__lang__ = LANG;
+    if (x.__meta__ === undefined && meta !== undefined) x.__meta__ = meta;
+    for (const k of Object.keys(x)) {
+      if (k === "__meta__" || k === "__lang__") continue;
+      stampFresh(x[k], meta);
+    }
+  }
+
+  function deep(x) {
+    // List (list field / rec receiving a run of children): descend each in order
+    if (Array.isArray(x)) return x.map(deep);
+    const w = DEEP[x.type];
+    if (w === undefined) {
+      throw new Error("[fuse ${first.from.id}] rec() hit unrecognized production " + x.type + " (" + whereOf(x) + ")");
+    }
+    return w(x);
+  }
+
+${fns.join("\n\n")}
+
+  const DEEP = {
+${byTag}
+  };
+
+  function run(x) {
+    depth = 0; maxDepth = 0; deepest = null;
+    return guard(() => deep(x));
+  }
+
+  return { run, arity: 0 };
+}
+`;
+}
+
+/** Identity during the deep phase: children descend via deep. */
+function emitDeepIdentity(spec: WalkerSpec, nt: string, tag: string, inProd: Prod): string {
+  const props: string[] = [`type: ${s(tag)}`];
+  for (const [f, d] of Object.entries(inProd)) {
+    const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
+    if (sh.kind === "copy") props.push(`${s(f)}: n.${f}`);
+    else if (sh.kind === "node") props.push(`${s(f)}: deep_${sh.nt}(n.${f})`);
+    else if (sh.kind === "list") props.push(`${s(f)}: n.${f}.map(deep_${sh.nt})`);
+    else props.push(`${s(f)}: n.${f} === undefined ? undefined : deep_${sh.nt}(n.${f})`);
+  }
+  return `      v = finish(n, { ${props.join(", ")} });`;
 }
 
 /**
- * Trampoline walker: **explicit frame stack + dispatch loop**, identity path uses zero JS stack frames.
+ * Trampoline fusion: **explicit frame stack + dispatch loop**, identity path uses zero JS stack frames.
  *
  * ── Why it exists
  *
- * Recursive version (`emitWalkerSrc`) uses one native stack frame per node, deep input blows stack.
- * Use recursive version normally (faster), switch to this **on overflow** — see per-pass fallback
- * in `e2e/runner.ts`.
+ * Recursive fusion (`emitFusedGroupRecSrc`) uses one native stack frame per node, deep input blows
+ * the stack. Use the recursive version normally (faster), switch to this **on overflow** — see the
+ * per-group fallback in `e2e/runner.ts`.
  *
- * ── No relation to fusion
- *
- * This code previously lived in the fusion suite ("trampoline version of fusion group"), and was used
- * for single-pass runs too — because single-pass is just a one-element group. After fusion was cut,
- * it was extracted into standalone function: **it's "same pass, switch to iterative descent"**.
- * Nothing to do with whether fusion happens or not, so shouldn't have followed fusion out.
- *
- * Cost: allocates one frame object per node, measured ~20% slower than recursive version (measured in t18).
- * So only use as fallback.
+ * Cost: allocates one frame object per node, measured ~20% slower than the recursive version (t18).
+ * So it is only the fallback. Output of the two paths is **byte-identical**; e2e checks both.
  *
  * ── Places that still use native stack
  *
- * `rec` received in handlers goes to the same trampoline (opens nested `drive` layer), so subtree traversal
- * is iterative too. The only place still using native stack is **nesting** of "handler calls rec, child also
- * has handler" — layers equal to number of nodes with handlers on the path. This limitation is real, error
- * message makes it clear (t18 / t27).
+ * `rec` received in handlers goes to the same trampoline (opens a nested `drive` layer), so subtree
+ * traversal is iterative too. The only place still using native stack is **nesting** of "handler
+ * calls rec, child also has handler" — layers equal to the number of nodes with handlers on the path.
+ * This limitation is real; the error message says so (t18 / t27).
  */
-function emitWalkerTrampSrc(spec: WalkerSpec): string {
-  checkTagUniqueness(spec);
+function emitFusedGroupTrampSrc(specs: readonly WalkerSpec[]): string {
+  if (specs.length === 0) throw new CodegenError("[fuse] empty group");
+  const first = specs[0]!;
+  // Fusion wires passes together by **nonterminal name**, so what matters is the name set, not the language id.
+  const ntNames = (sp: WalkerSpec): string => Object.keys(sp.from.rules).sort().join(",");
+  for (const sp of specs) {
+    if (ntNames(sp) !== ntNames(first)) {
+      throw new CodegenError(
+        `[fuse] nonterminal names in group don't match: ${sp.from.id} has ${ntNames(sp)}, ${first.from.id} has ${ntNames(first)}`,
+      );
+    }
+    if (sp.arity !== first.arity) {
+      throw new CodegenError(
+        `[fuse] arity mismatch in group: ${sp.from.id} has ${sp.arity}, ${first.from.id} has ${first.arity}`,
+      );
+    }
+    if (specs.length > 1 && sp.arity !== 0) {
+      throw new CodegenError(
+        `[fuse] ${sp.from.id}: a pass with arity ${sp.arity} cannot fuse with others (shallow cannot express threading)`,
+      );
+    }
+    checkTagUniqueness(sp);
+  }
 
-  const k = spec.arity;
-  const lang = spec.from.rules;
+  const lang = first.from.rules;
   const nts = Object.keys(lang);
 
-  // tag → non-terminal (tag is unique in a language, guaranteed by checkTagUniqueness)
+  // ── Generated tables
+
+  // tag → nonterminal (a tag is unique within a language; checkTagUniqueness guarantees this)
   const tagNt: Record<string, string> = {};
   for (const nt of nts) for (const tag of Object.keys(lang[nt]!)) tagNt[tag] = nt;
 
-  // tag → child node field table, in declaration order. Driver uses this to determine descent order.
+  // tag → child node field table, in declaration order. The driver uses this for descent order.
   // kind: n = single node, l = node list, m = optional node
   const tagFields: Record<string, [string, string][]> = {};
   for (const nt of nts) {
@@ -598,7 +854,7 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
       if (typeof inProd === "string") continue;
       const fields: [string, string][] = [];
       for (const [f, d] of Object.entries(inProd)) {
-        const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
+        const sh = shapeOf(first.from, d, `${nt}.${tag}.${f}`);
         if (sh.kind === "node") fields.push([f, "n"]);
         else if (sh.kind === "list") fields.push([f, "l"]);
         else if (sh.kind === "maybe") fields.push([f, "m"]);
@@ -607,20 +863,23 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
     }
   }
 
-  // Number of result slots in frame = maximum child field count across all tags.
-  // Use numbered slots rather than array: saves per-node array allocation (hot path).
+  // Number of result slots in a frame = maximum child field count across all tags.
+  // Numbered slots rather than an array: saves one array allocation per node (hot path).
   const maxSlots = Math.max(1, ...Object.values(tagFields).map((f) => f.length));
   const slotNames = Array.from({ length: maxSlots }, (_, i) => `r${i}`);
   const slotInit = slotNames.map((n) => `${n}: undefined`).join(", ");
-  // Write to slot i — use switch instead of fr["r" + i]: dynamic keys degrade to dictionary lookup
+  // Write to slot i — switch, not fr["r" + i]: a dynamic key degrades to dictionary lookup
   const slotCases = slotNames.map((n, i) => `      case ${i}: fr.${n} = v; return;`).join("\n");
 
-  // Same language → allow "return original node if no children changed".
-  // Same reason as identity path in emitWalkerSrc: fixed-point determination needs single `===` check (t13),
-  // bonus: saves reallocation of unchanged subtrees.
-  const canReuse = spec.from.id === spec.to.id;
+  // Identity construction: pack the collected child results into a literal. There is **no recursion**
+  // here — the children are sitting in the slots.
+  //
+  // Single pass and same language → allow "return the original node when no child changed". Same
+  // reason as the identity path in emitWalkerSrc: fixed-point determination needs a single `===`
+  // (t13), and it saves reallocating unchanged subtrees. Not possible when fusing several passes —
+  // that is a chain, and a node belongs to different stages.
+  const canReuse = specs.length === 1 && first.from.id === specs[0]!.to.id;
 
-  // Identity construction: pack collected child node results into object literal. **No recursion here** — children are in slots.
   const buildCases: string[] = [];
   for (const nt of nts) {
     for (const [tag, inProd] of Object.entries(lang[nt]!)) {
@@ -629,7 +888,7 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
       const checks: string[] = [];
       let ri = 0;
       for (const [f, d] of Object.entries(inProd)) {
-        const sh = shapeOf(spec.from, d, `${nt}.${tag}.${f}`);
+        const sh = shapeOf(first.from, d, `${nt}.${tag}.${f}`);
         if (sh.kind === "copy") props.push(`${s(f)}: n.${f}`);
         else {
           if (canReuse) {
@@ -644,28 +903,30 @@ function emitWalkerTrampSrc(spec: WalkerSpec): string {
         }
       }
       const obj = `{ ${props.join(", ")} }`;
-      // Leaf always "unchanged", return n directly (otherwise reference never equal)
+      // Same as above: a leaf is always "unchanged", return n directly (otherwise the reference never compares equal)
       const built = !canReuse ? obj : checks.length === 0 ? "n" : `(${checks.join(" || ")}) ? ${obj} : n`;
       buildCases.push(`    case ${s(tag)}:\n      return ${built};`);
     }
   }
 
-  return `// Generated by codegen (trampoline version). Do not edit by hand. Change language declarations or pass rules, then regenerate.
-//   ${spec.from.id} -> ${spec.to.id}${k > 0 ? `   (extra ${k} values, threaded)` : ""}   (descent doesn't use native stack)
+  return `// Generated by codegen (fused + trampoline). Do not edit by hand. Change language declarations or pass rules, then regenerate.
+//   ${specs.map((x) => x.from.id).join(" -> ")} -> ${specs[specs.length - 1]!.to.id}   (${specs.length} passes fused into 1 traversal)
 //
-// Explicit frame stack + dispatch loop: identity path uses zero JS stack frames.
-// rec in handlers also connects to same trampoline (opens nested drive layer), so subtree traversal is iterative too.
-// The only place still using native stack is nesting of "handler calls rec, child also has handler" — layers
-// equal to number of nodes with handlers on the path.
-function build(handlers, init) {
-  const LANG = ${s(spec.to.id)};
+// This is an **explicit frame stack + dispatch loop**, not recursive descent: the identity path uses
+// zero JS stack frames. rec in handlers connects to the same trampoline (opens a nested drive layer),
+// so subtree traversal is iterative too. The only place still using native stack is nesting of
+// "handler calls rec, child also has handler" — layers equal to the number of nodes with handlers on the path.
+function build(handlersList, init) {
+  // A group's result belongs to the **last** pass's output language — not the first pass's
+  const LANG = ${s(specs[specs.length - 1]!.to.id)};
   /** List element-wise reference comparison — "reuse if unchanged" needs this. */
   function sameList(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
     return true;
   }
-  const K = ${k};
+  const K = ${first.arity};
+  const idRec = (x) => x;
 
   const TAG_NT = {
 ${Object.entries(tagNt)
@@ -680,19 +941,26 @@ ${Object.entries(tagFields)
   .join("\n")}
   };
 
-  // tag → handler **flat map**. Saves looking up per-nonterminal layer every time.
-  const H = Object.create(null);
-  for (const tag in TAG_NT) {
-    const per = handlers[TAG_NT[tag]];
-    const h = per === undefined ? undefined : per[tag];
-    if (h !== undefined) H[tag] = h;
+  // One flat tag → handler table per pass. Saves looking up the nonterminal layer every time.
+  const HANDLERS = [];
+  for (let i = 0; i < handlersList.length; i++) {
+    const flat = Object.create(null);
+    for (const tag in TAG_NT) {
+      const nt = TAG_NT[tag];
+      const per = handlersList[i][nt];
+      const h = per === undefined ? undefined : per[tag];
+      if (h !== undefined) flat[tag] = h;
+    }
+    HANDLERS.push(flat);
   }
+  const H0 = HANDLERS[0];
+  const SHALLOW = HANDLERS.slice(1);
 
   // __lang__ / __meta__ patching point.
   //
-  // Top level alone is not enough — handlers will **create new** nodes in the return value (e.g., desugared Lam),
-  // and those need __lang__ and source location too. So we walk down, but **only into newly created nodes**:
-  // nodes that already have __lang__ are products from previous round.
+  // Top level alone is not enough — handlers **create new** nodes in the return value (e.g., a
+  // desugared Lam), and those need __lang__ and source location too. So we walk down, but **only
+  // into newly created nodes**: nodes that already have __lang__ are the previous round's products.
   // Cost is O(number of nodes created this time), not O(subtree size).
   function finish(from, to) {
     if (to === null || typeof to !== "object" || Array.isArray(to)) return to;
@@ -722,19 +990,19 @@ ${Object.entries(tagFields)
     switch (tag) {
 ${buildCases.join("\n")}
     default:
-      throw new Error("[${spec.from.id}] no constructor for production " + tag);
+      throw new Error("[fuse ${first.from.id}] no constructor for production " + tag);
     }
   }
 
   // ── Trampoline ──
   //
-  // Frame shape (only one object type, fixed fields, so hidden class is stable):
+  // Frame shape (one object type, fixed fields, so the hidden class is stable):
   //   { node, fs, i, li, lacc, ctx, r0..rn }
   //   fs   child node field table for this tag
-  //   i    processing which field
-  //   li   reached which element in list field; lacc is accumulator array (null = not started yet)
+  //   i    which field is being processed
+  //   li   which element of a list field we reached; lacc is the accumulator array (null = not started)
 
-  /** Find next **node** to descend into for this frame; return undefined if none (frame can finalize). */
+  /** Find the next **node** to descend into for this frame; undefined means the frame can finalize. */
   function takeChild(fr) {
     for (;;) {
       if (fr.i >= fr.fs.length) return undefined;
@@ -757,16 +1025,16 @@ ${buildCases.join("\n")}
     }
   }
 
-  /** Write result by slot number. Use switch instead of dynamic key: dynamic key degrades to dictionary lookup. */
+  /** Write a result by slot number. Switch, not a dynamic key: a dynamic key degrades to dictionary lookup. */
   function setSlot(fr, i, v) {
     switch (i) {
 ${slotCases}
       default:
-        throw new Error("[${spec.from.id}] slot out of bounds " + i);
+        throw new Error("[fuse ${first.from.id}] slot out of bounds " + i);
     }
   }
 
-  /** Accept next child node result. When K > 0, value is [node, ...extra], extra threaded to next sibling. */
+  /** Accept the next child result. When K > 0 the value is [node, ...extra], extra threaded to the next sibling. */
   function accept(fr, value) {
     if (K > 0) fr.ctx = value.slice(1);
     const node0 = K > 0 ? value[0] : value;
@@ -775,15 +1043,16 @@ ${slotCases}
     fr.i += 1;
   }
 
-  /** Finalize this frame: run handler (or identity), pack child nodes from slots back into a node. */
+  /** Finalize this frame: run pass 0 (handler or identity), then shallow-run the remaining passes. */
   function buildOne(fr) {
     const tag = fr.node.type;
-    const h = H[tag];
+    const h = H0[tag];
     let v;
     if (h !== undefined) {
-      // handler is black box (leaf): its rec connects to **this trampoline**, so subtree is still iterative.
-      // When K > 0 it returns tuple [node, ...extra], finish can only act on node —
-      // directly feeding tuple to finish treats it as "array, return as-is", then entire tuple gets stuffed into field.
+      // A handler is a black box (leaf): its rec is **this trampoline**, so the subtree stays iterative.
+      // When K > 0 it returns the tuple [node, ...extra]; finish can only act on the node —
+      // feeding the tuple straight to finish treats it as "array, return as-is", and then the whole
+      // tuple gets stuffed into the field.
       if (K > 0) {
         const t = h(fr.node, drive, ...fr.ctx);
         v = finish(fr.node, t[0]);
@@ -793,6 +1062,10 @@ ${slotCases}
       }
     } else {
       v = finish(fr.node, buildIdentity(tag, fr.node, fr));
+    }
+    for (let i = 0; i < SHALLOW.length; i++) {
+      const s = SHALLOW[i][tag];
+      if (s !== undefined) v = finish(fr.node, s(v, idRec));
     }
     return K > 0 ? [v, ...fr.ctx] : v;
   }
@@ -805,14 +1078,14 @@ ${slotCases}
     return (m.file ?? "?") + ":" + (m.line ?? "?") + (m.col !== undefined ? ":" + m.col : "");
   }
 
-  // Tags with handlers are treated as leaves: **driver doesn't descend**, handler calls rec itself.
-  // Not doing this would descend once, then handler rec's again — child nodes processed twice
-  // (non-idempotent passes break immediately: temp names advance one extra step).
+  // A tag with a handler is treated as a leaf: **the driver does not descend**, the handler calls rec itself.
+  // Otherwise it would descend once and the handler would rec again — child nodes processed twice
+  // (a non-idempotent pass breaks immediately: temp names advance one extra step).
   const NO_CHILDREN = [];
 
   function drive(root, ...ctx0) {
-    // List: same as single-pass rec — one element's extra feeds the next (preserves order).
-    // **Missing this branch blows up on "unrecognized production undefined"**, because arrays have no .type.
+    // List: same as single-pass rec — one element's extra feeds the next (order preserved).
+    // **Missing this branch blows up on "unrecognized production undefined"**, because an array has no .type.
     if (Array.isArray(root)) {
       let c = ctx0;
       const out = [];
@@ -830,20 +1103,20 @@ ${slotCases}
     const stack = [];
     let node = root;
     let value;
-    let mode = 0; // 0 = have a node to process, 1 = have a result to deliver to top of stack
+    let mode = 0; // 0 = have a node to process, 1 = have a result to deliver to the top of the stack
     lastNode = root;
 
     for (;;) {
       if (mode === 0) {
         lastNode = node;
-        const fs = H[node.type] !== undefined ? NO_CHILDREN : FIELDS[node.type];
+        const fs = H0[node.type] !== undefined ? NO_CHILDREN : FIELDS[node.type];
         if (fs === undefined) {
           throw new Error(
-            "[${spec.from.id}] unrecognized production " + node.type +
+            "[fuse ${first.from.id}] unrecognized production " + node.type +
               " (__lang__=" + (node && node.__lang__) + ", " + whereOf(node) + ")",
           );
         }
-        // Frame's ctx is inherited from above (parent frame or this call's input) — this is threading
+        // A frame's ctx is inherited from above (parent frame or this call's input) — that is the threading
         const fr = {
           node,
           fs,
@@ -885,8 +1158,8 @@ ${slotCases}
     } catch (e) {
       if (e instanceof RangeError && /stack/i.test(String(e.message))) {
         const err = new Error(
-          "[${spec.from.id}] Input nested too deep: " + whereOf(lastNode) +
-            ".\\n  Trampoline version's identity path doesn't use native stack, but when handler calls rec and child also has handler, they nest — layers equal to number of nodes with handlers on the path.",
+          "[fuse ${first.from.id}] input nested too deep: " + whereOf(lastNode) +
+            ".\\n  The fused traverser's identity path doesn't use native stack, but when a handler calls rec and the child also has a handler, they nest — layers equal to the number of nodes with handlers on the path (t18 / t27).",
         );
         err.name = "StackOverflow";
         throw err;

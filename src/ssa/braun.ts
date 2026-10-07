@@ -152,7 +152,7 @@ class BraunBuilder<T> {
       incoming.push([pred, value] as const);
     }
 
-    const phi: Instruction<T> = {
+    const phi: Instruction = {
       type: "phi",
       dest: phiId,
       incoming,
