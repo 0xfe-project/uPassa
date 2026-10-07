@@ -33,6 +33,7 @@ import { resolvePrimitives, resolvePrimitivesSpec } from "./passes/resolve-primi
 import { uncoverFree, uncoverFreeSpec } from "./passes/uncover-free.S10->S11.pass.ts";
 import { convertClosures, convertClosuresSpec } from "./passes/convert-closures.S11->S12.pass.ts";
 import { liftLambdas, liftLambdasSpec } from "./passes/lift-lambdas.S12->S13.pass.ts";
+import { deforest, deforestSpec } from "./passes/deforest.S13.pass.ts";
 import { markTail, markTailSpec } from "./passes/mark-tail.S13->S14.pass.ts";
 
 export interface PipelineStep {
@@ -63,6 +64,8 @@ export const PIPELINE: readonly PipelineStep[] = [
   { name: "uncover-free", spec: uncoverFreeSpec, run: uncoverFree },
   { name: "convert-closures", spec: convertClosuresSpec, run: convertClosures },
   { name: "lift-lambdas", spec: liftLambdasSpec, run: liftLambdas },
+  // Same language: it recognises shapes and adds a function, it does not change what S13 is.
+  { name: "deforest", spec: deforestSpec, run: deforest },
   { name: "mark-tail", spec: markTailSpec, run: markTail },
 ];
 
@@ -134,18 +137,18 @@ export function fusionGroups(
 }
 
 /** Run the pipeline one pass at a time. */
-export function runUnfused(program: S0_Program): S14_Program {
+export function runUnfused(program: S0_Program, steps: readonly PipelineStep[] = PIPELINE): S14_Program {
   let cur: unknown = program;
-  for (const step of PIPELINE) {
+  for (const step of steps) {
     cur = runStep(step, cur);
   }
   return cur as S14_Program;
 }
 
 /** Run the pipeline with every fusable group collapsed into a single traversal. */
-export function runFused(program: S0_Program): S14_Program {
+export function runFused(program: S0_Program, steps: readonly PipelineStep[] = PIPELINE): S14_Program {
   let cur: unknown = program;
-  for (const group of fusionGroups()) {
+  for (const group of fusionGroups(steps)) {
     if (group.length === 1) {
       cur = runStep(group[0]!, cur);
       continue;
@@ -173,10 +176,22 @@ function runStep(step: PipelineStep, node: unknown): unknown {
 export interface CompileOptions {
   /** Collapse contiguous fusable groups into one traversal. Default false. */
   readonly fuse?: boolean;
+  /**
+   * Passes to leave out, by name.
+   *
+   * Every pass in this chain is supposed to be value-preserving, and the only way to check that is
+   * to run the program with the pass and without it and compare. Leaving a pass out by name is what
+   * makes that checkable for a pass whose effect is not observable in the output of the *whole*
+   * pipeline — deforestation changes how many allocations happen, and a program that prints the
+   * same numbers either way would hide a wrong one.
+   */
+  readonly without?: readonly string[] | undefined;
 }
 
 /** Source text to S14. */
 export function compile(source: string, opts: CompileOptions = {}): S14_Program {
   const program = parse(source);
-  return (opts.fuse ?? false) ? runFused(program) : runUnfused(program);
+  const steps =
+    opts.without === undefined ? PIPELINE : PIPELINE.filter((s) => !opts.without!.includes(s.name));
+  return (opts.fuse ?? false) ? runFused(program, steps) : runUnfused(program, steps);
 }

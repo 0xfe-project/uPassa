@@ -19,6 +19,8 @@ import type { S14_Program } from "./langs/chain.ts";
 export interface CompileOptions {
   /** Run the nanopass passes fused. Default false. */
   readonly fuse?: boolean;
+  /** Nanopass passes to leave out, by name. For checking that a pass preserves the value. */
+  readonly without?: readonly string[] | undefined;
   /** Build SSA before running. Default true — the benchmarks measure the optimized shape. */
   readonly ssa?: boolean;
   /** Run the SSA optimization passes. Default false, so tests can compare the two. */
@@ -45,7 +47,7 @@ export interface CompiledProgram {
 }
 
 export function compileProgram(source: string, opts: CompileOptions = {}): CompiledProgram {
-  const tree = compile(source, { fuse: opts.fuse ?? false });
+  const tree = compile(source, { fuse: opts.fuse ?? false, without: opts.without });
   const lowered = lower(tree);
 
   // Before the SSA construction, never after. A self tail call becomes an assignment to a frame
