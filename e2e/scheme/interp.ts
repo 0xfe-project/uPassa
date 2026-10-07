@@ -40,11 +40,13 @@ export type Value =
   | { tag: "pair"; car: Value; cdr: Value }
   | { tag: "closure"; fn: string; free: Value[] }
   | { tag: "func"; fn: string }
+  | { tag: "nil" }
   | { tag: "void" };
 
 export const V_INT = (n: number): Value => ({ tag: "int", n });
 export const V_BOOL = (b: boolean): Value => ({ tag: "bool", b });
 export const V_VOID: Value = { tag: "void" };
+export const V_NIL: Value = { tag: "nil" };
 
 /** Render a value the way a REPL would. */
 export function show(v: Value): string {
@@ -53,6 +55,8 @@ export function show(v: Value): string {
       return String(v.n);
     case "bool":
       return v.b ? "#t" : "#f";
+    case "nil":
+      return "()";
     case "void":
       return "#<void>";
     case "func":
@@ -268,6 +272,9 @@ class Interp {
       case "const":
         return typeof inst.value === "boolean" ? V_BOOL(inst.value) : V_INT(inst.value);
 
+      case "nil":
+        return V_NIL;
+
       case "prim":
         return this.evalPrim(values, fn, inst.op, inst.args);
 
@@ -330,10 +337,15 @@ class Interp {
     values: Map<ValueId, Value>,
     fn: SSAFunction<SchemeNode>,
     op: string,
-    args: readonly [ValueId, ValueId],
+    args: readonly ValueId[],
   ): Value {
-    const a = this.get(values, args[0], fn);
-    const b = this.get(values, args[1], fn);
+    if (op === "null?") {
+      const x = this.get(values, args[0]!, fn);
+      return V_BOOL(x.tag === "nil");
+    }
+
+    const a = this.get(values, args[0]!, fn);
+    const b = this.get(values, args[1]!, fn);
 
     if (a.tag !== "int" || b.tag !== "int") {
       throw new SchemeRuntimeError(`primitive ${op} needs integers, got ${show(a)} and ${show(b)}`);

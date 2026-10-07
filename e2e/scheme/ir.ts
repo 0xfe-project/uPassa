@@ -18,14 +18,20 @@
 
 import type { SSAOps, ValueId } from "../../src/ssa/ir.ts";
 
-/** Binary primitives. Kept as one node kind with an op tag: the ops for them are identical. */
-export type PrimOp = "add" | "sub" | "mul" | "div" | "mod" | "lt" | "le" | "gt" | "ge" | "num-eq";
+/**
+ * Primitives. One node kind with an op tag, because the operand handling is identical for all of
+ * them — adding a node kind per operator would mean touching `def`/`uses`/`setUse` every time.
+ *
+ * The arity is not fixed: arithmetic takes two operands, `null?` takes one.
+ */
+export type PrimOp = "add" | "sub" | "mul" | "div" | "mod" | "lt" | "le" | "gt" | "ge" | "num-eq" | "null?";
 
-/** Arithmetic and comparison. */
-export type PrimInstr = { type: "prim"; dest: ValueId; op: PrimOp; args: [ValueId, ValueId] };
+export type PrimInstr = { type: "prim"; dest: ValueId; op: PrimOp; args: ValueId[] };
 
 export type SchemeInstr =
   | { type: "const"; dest: ValueId; value: number | boolean }
+  /** The empty list. Its own node rather than a special const, so it cannot be confused with a number. */
+  | { type: "nil"; dest: ValueId }
   /** `(op a b)` — the only binary node, so `def`/`uses` do not have to grow per operator. */
   | PrimInstr
   /** Heap allocation of a pair. Counted by the benchmarks. */
@@ -70,6 +76,7 @@ export const schemeOps: SSAOps<SchemeNode> = {
   uses: (n) => {
     switch (n.type) {
       case "const":
+      case "nil":
       case "func-ref":
         return [];
       case "prim":
@@ -99,10 +106,11 @@ export const schemeOps: SSAOps<SchemeNode> = {
     const swap = (v: ValueId): ValueId => (v === from ? to : v);
     switch (n.type) {
       case "const":
+      case "nil":
       case "func-ref":
         break;
       case "prim":
-        n.args = [swap(n.args[0]), swap(n.args[1])];
+        n.args = n.args.map(swap);
         break;
       case "cons":
         n.car = swap(n.car);

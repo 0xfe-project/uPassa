@@ -8,6 +8,7 @@ framework implementations, not a shipped compiler. Test programs are vehicles fo
 | Kind | Pattern | Example |
 |------|---------|---------|
 | Language declaration | `*.lang.ts` | `langs/toy.lang.ts` |
+| Language **chain** | `langs/*.chain.ts` | `scheme/langs/chain.ts` |
 | Pass, cross-language | `*.<from>-><to>.pass.ts` | `passes/begin-elim.T0->T1.pass.ts` |
 | Pass, same language | `*.<lang>.pass.ts` | `passes/fold-const.T2.pass.ts` |
 | Test | `*.test.ts` | `tests/fusion.test.ts` |
@@ -15,6 +16,9 @@ framework implementations, not a shipped compiler. Test programs are vehicles fo
 
 Notes:
 
+- A **chain** is one artifact: a run of languages where each layer differs from its neighbour by one
+  construct. It lives in one `*.chain.ts` file, read top to bottom, rather than one tiny file per
+  layer. A standalone language uses `*.lang.ts`.
 - A pass file exports both the runnable function and the pass **spec**. Fusion needs the spec;
   everything else needs the function. Export both rather than re-deriving one from the other.
 - No `*.md.ts`. Documentation is `*.md`.
