@@ -86,6 +86,9 @@ class Braun<T> {
   /** Which block each phi lives in, so a removed phi can be dropped from that block's list. */
   private readonly phiBlock = new Map<PhiNode, BlockId>();
 
+  /** Which variable each phi was created for, so a removed phi can be taken out of `blockDefs`. */
+  private readonly phiVariable = new Map<PhiNode, ValueId>();
+
   /** value -> nodes that read it. Needed to rewire uses when a trivial phi is deleted. */
   private readonly users = new Map<ValueId, Use<T>[]>();
 
@@ -265,17 +268,21 @@ class Braun<T> {
     const preds = this.preds.get(block) ?? [];
     let value: ValueId;
 
-    if (!this.sealed.has(block)) {
-      // Not all predecessors are known yet, so the phi's operands cannot be filled in. Create it
-      // incomplete; sealing will complete it.
+    if (preds.length === 0) {
+      // No edge enters this block, so nothing can define the name on any path. It stands for
+      // itself. This is how parameters and globals pass through; the framework models neither.
+      //
+      // Checked before the sealed test on purpose: predecessors are derived from terminators up
+      // front, so they are already complete even while the block is unsealed. Asking "is it
+      // sealed" first would build a phi with no operands, which is never right.
+      value = variable;
+    } else if (!this.sealed.has(block)) {
+      // Predecessors exist but have not all been processed, so the phi's operands cannot be filled
+      // in yet. Create it incomplete; sealing will complete it.
       value = this.addIncompletePhi(variable, block);
     } else if (preds.length === 1) {
       // A single predecessor needs no phi — just read through.
       value = this.readVariable(variable, preds[0]!);
-    } else if (preds.length === 0) {
-      // No definition reaches this block along any path, so the name stands for itself.
-      // This is how parameters and globals pass through; the framework models neither.
-      value = variable;
     } else {
       value = this.addPhi(variable, block);
     }
@@ -295,14 +302,14 @@ class Braun<T> {
 
   private addPhi(variable: ValueId, block: BlockId): ValueId {
     const phi: PhiNode = { type: "phi", dest: this.freshName(), incoming: [] };
-    this.recordPhi(block, phi);
+    this.recordPhi(block, phi, variable);
     this.fillPhi(phi, variable, block);
     return this.tryRemoveTrivialPhi(phi) ?? phi.dest;
   }
 
   private addIncompletePhi(variable: ValueId, block: BlockId): ValueId {
     const phi: PhiNode = { type: "phi", dest: this.freshName(), incoming: [] };
-    this.recordPhi(block, phi);
+    this.recordPhi(block, phi, variable);
 
     let byVariable = this.incomplete.get(block);
     if (byVariable === undefined) {
@@ -334,7 +341,7 @@ class Braun<T> {
     this.sealed.add(block);
   }
 
-  private recordPhi(block: BlockId, phi: PhiNode): void {
+  private recordPhi(block: BlockId, phi: PhiNode, variable: ValueId): void {
     let list = this.phis.get(block);
     if (list === undefined) {
       list = [];
@@ -342,6 +349,7 @@ class Braun<T> {
     }
     list.push(phi);
     this.phiBlock.set(phi, block);
+    this.phiVariable.set(phi, variable);
   }
 
   // ───────────────────────── Trivial phis ─────────────────────────
@@ -370,8 +378,12 @@ class Braun<T> {
     }
     this.users.delete(phi.dest);
 
-    // Drop the phi from its block.
+    // Drop the phi from its block, and stop any later read from resolving to it.
+    // `writeVariable` recorded the phi's name as this block's definition of the variable; that
+    // entry has to follow the replacement, or reads in later blocks resolve to a name that no
+    // longer exists.
     const block = this.phiBlock.get(phi);
+    const variable = this.phiVariable.get(phi);
     if (block !== undefined) {
       const list = this.phis.get(block);
       if (list) {
@@ -379,6 +391,11 @@ class Braun<T> {
         if (at >= 0) list.splice(at, 1);
       }
       this.phiBlock.delete(phi);
+    }
+    if (block !== undefined && variable !== undefined) {
+      const defs = this.blockDefs.get(block);
+      if (defs !== undefined && defs.get(variable) === phi.dest) defs.set(variable, same);
+      this.phiVariable.delete(phi);
     }
 
     // A reader that is itself a phi may have just become trivial.

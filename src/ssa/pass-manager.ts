@@ -21,11 +21,12 @@ import { buildDomTree, type DomTree } from "./analysis/domtree.ts";
 import { buildUseDefChains, type UseDefChains } from "./analysis/usedef.ts";
 import { detectLoops, type LoopInfo } from "./analysis/loops.ts";
 import { verifySSA } from "./verify.ts";
+import type { SSAOps } from "./ir.ts";
 
 /**
  * Pass manager configuration
  */
-export interface PassManagerConfig {
+export interface PassManagerConfig<T = never> {
   /** Maximum iterations for fixed-point passes */
   readonly maxIterations?: number;
 
@@ -37,6 +38,14 @@ export interface PassManagerConfig {
 
   /** Verify IR after each pass (slow, for debugging) */
   readonly verifyEach?: boolean;
+
+  /**
+   * Operand access for the user's nodes.
+   *
+   * Only needed when `verifyEach` is on: verification has to read your operands to check anything
+   * about your instructions. Without it, `verifyEach` throws rather than silently checking nothing.
+   */
+  readonly ops?: SSAOps<T> | undefined;
 }
 
 /**
@@ -83,15 +92,16 @@ class AnalysisCache {
  * SSA pass manager: orchestrates pass execution
  */
 export class PassManager<T = never> {
-  private readonly config: Required<PassManagerConfig>;
+  private readonly config: Required<Omit<PassManagerConfig<T>, "ops">> & { ops: SSAOps<T> | undefined };
   private readonly stats: PassStats[] = [];
 
-  constructor(config: PassManagerConfig = {}) {
+  constructor(config: PassManagerConfig<T> = {}) {
     this.config = {
       maxIterations: config.maxIterations ?? 10,
       collectStats: config.collectStats ?? false,
       verbose: config.verbose ?? false,
       verifyEach: config.verifyEach ?? false,
+      ops: config.ops,
     };
   }
 
@@ -299,8 +309,14 @@ export class PassManager<T = never> {
    * Verify function after a pass (for debugging).
    */
   private verifyFunction(func: SSAFunction<T>, passName: string): void {
+    const ops = this.config.ops;
+    if (ops === undefined) {
+      throw new Error(
+        `verifyEach is on, but no SSAOps was given to the PassManager — verification would check nothing about your instructions.`,
+      );
+    }
     try {
-      verifySSA(func);
+      verifySSA(func, ops);
     } catch (err) {
       throw new Error(`IR verification failed after pass "${passName}": ${(err as Error).message}`);
     }
