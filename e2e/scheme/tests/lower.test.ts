@@ -71,12 +71,16 @@ describe("lowering", () => {
     const big = runSource(recursion(100_000));
     expect(big.output).toEqual(["100000"]);
     expect(big.stats.calls).toBe(small.stats.calls);
-    expect(big.stats.tailcalls).toBeGreaterThan(100_000);
+    // Frames are the observable half of it: a self tail call became a loop, so the frame is reused
+    // rather than rebuilt. See tests/loops.test.ts for the conversion itself.
+    expect(big.stats.frames).toBe(small.stats.frames);
   });
 
   test("mutual tail recursion also does not grow the stack", () => {
-    const small = runSource(mutual(10));
-    const big = runSource(mutual(100_000));
+    // A mutual call is not a loop over one frame, so the frames here are replaced rather than
+    // reused — but the count still does not grow, because the replacement is constant-stack.
+    const small = runSource(mutual(10), [], { loops: false });
+    const big = runSource(mutual(100_000), [], { loops: false });
     expect(big.stats.calls).toBe(small.stats.calls);
   });
 

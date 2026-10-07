@@ -10,8 +10,12 @@
  *
  * Wall-clock time measures the interpreter, not the compiled code, so it says nothing about whether
  * the output is "C-like". What is meaningful is what the *program* does: how many IR instructions it
- * executes and how many heap allocations it performs. Those are the numbers the benchmarks compare
+ * executes and how many allocations it performs. Those are the numbers the benchmarks compare
  * between unoptimized, optimized, and a hand-written C-style baseline.
+ *
+ * One unit is one instruction executed — phis included, since the interpreter really does resolve
+ * one — or one frame slot written when a call is entered. The second half matters: a frame is not
+ * free, and a loop that calls itself pays for one every iteration where a real loop would not.
  *
  * ── Tail calls
  *
@@ -92,6 +96,14 @@ export interface Stats {
   calls: number;
   /** Tail calls performed. */
   tailcalls: number;
+  /**
+   * Frames created.
+   *
+   * A frame is the storage a call needs, so this is the third thing a program allocates — next to
+   * pairs and closures. It is the number that shows whether a self tail call became a loop: the
+   * loop reuses one frame, the call does not.
+   */
+  frames: number;
 }
 
 export interface RunResult {
@@ -116,7 +128,7 @@ type Outcome =
 
 class Interp {
   private readonly module: Module;
-  private readonly stats: Stats = { instructions: 0, allocs: 0, calls: 0, tailcalls: 0 };
+  private readonly stats: Stats = { instructions: 0, allocs: 0, calls: 0, tailcalls: 0, frames: 0 };
   private readonly output: string[] = [];
   /** Top-level bindings that are not functions. Shared by every frame. */
   private readonly globals = new Map<string, Value>();
@@ -160,6 +172,13 @@ class Interp {
   }
 
   private execBody(fn: SSAFunction<SchemeNode>, args: Value[], free: Value[]): Outcome {
+    this.stats.frames++;
+
+    // Seeding a frame is one store per slot, and it is counted. A program that calls in a loop
+    // pays it every iteration; a C loop does not. Leaving it out of the count would make the
+    // comparison systematically favour the calling form, which is the thing being measured.
+    this.stats.instructions += args.length + free.length;
+
     const values = new Map<ValueId, Value>();
     for (let i = 0; i < free.length; i++) values.set(`f${i}`, free[i]!);
     for (let i = 0; i < args.length; i++) values.set(`p${i}`, args[i]!);

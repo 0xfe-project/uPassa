@@ -27,14 +27,22 @@ import { copyPropPass } from "./ssa-passes/copy-prop.ssa.pass.ts";
 import { constFoldPass } from "./ssa-passes/const-fold.ssa.pass.ts";
 import { dcePass } from "./ssa-passes/dce.ssa.pass.ts";
 import { csePass } from "./ssa-passes/cse.ssa.pass.ts";
+import { hoistInvariantsPass } from "./ssa-passes/hoist-invariants.ssa.pass.ts";
 
 /**
  * The passes, in the order they run in a round.
  *
- * Copy propagation first: it removes instructions, which makes the rest cheaper. DCE last: it
- * cleans up whatever the others left dead.
+ * Copy propagation first: it removes instructions, which makes the rest cheaper. Hoisting before
+ * CSE, so that two computations which become identical once one has left the loop are merged. DCE
+ * last: it cleans up whatever the others left dead.
  */
-export const SSA_PASSES: readonly SSAPass<SchemeNode>[] = [copyPropPass, constFoldPass, csePass, dcePass];
+export const SSA_PASSES: readonly SSAPass<SchemeNode>[] = [
+  copyPropPass,
+  constFoldPass,
+  hoistInvariantsPass,
+  csePass,
+  dcePass,
+];
 
 export interface OptimizeOptions {
   /** Stop after this many rounds even if something is still changing. */

@@ -81,7 +81,13 @@ describe("the passes do something", () => {
   });
 
   test("every declared pass is reachable by name", () => {
-    expect(SSA_PASSES.map((p) => p.name)).toEqual(["copy-prop", "const-fold", "cse", "dce"]);
+    expect(SSA_PASSES.map((p) => p.name)).toEqual([
+      "copy-prop",
+      "const-fold",
+      "hoist-invariants",
+      "cse",
+      "dce",
+    ]);
   });
 });
 

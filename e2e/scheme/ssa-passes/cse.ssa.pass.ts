@@ -1,8 +1,15 @@
 /**
  * Common subexpression elimination, within a block.
  *
- * Two instructions that compute the same thing from the same operands produce the same value, so
- * the second one's readers can read the first one's result instead.
+ * Two instructions in the same block that compute the same thing from the same operands produce the
+ * same value, so the second one's readers can read the first one's result instead. The first
+ * dominates the second, so this is always safe.
+ *
+ * The replacements are collected per block and applied to the **whole function**. Rewriting only
+ * the block that found the duplicate leaves the readers in other blocks pointing at the old name,
+ * which keeps it live — so DCE cannot remove the instruction, and the next round finds the same
+ * duplicate again and reports a change it already made. A pass that reports the same change forever
+ * is a pipeline that never reaches a fixpoint.
  *
  * The table is cleared at every instruction with an effect. A `call` can write a global, so a
  * `global-ref` before it and one after it are not the same value — and a `print` can run arbitrary
@@ -44,7 +51,8 @@ function key(inst: { type: string; [k: string]: unknown }, uses: readonly ValueI
 export const csePass = ssaPass<SchemeNode>({
   name: "cse",
   run: (fn) => {
-    let replaced = 0;
+    /** value -> what it is known to equal, built up block by block. */
+    const alias = new Map<ValueId, ValueId>();
 
     for (const block of fn.blocks.values()) {
       // key -> the value that already holds this computation, in this block.
@@ -54,7 +62,6 @@ export const csePass = ssaPass<SchemeNode>({
         if (inst.type === "phi") continue;
 
         if (!isPure(inst)) {
-          // It may have changed something the table is based on.
           available.clear();
           continue;
         }
@@ -62,8 +69,7 @@ export const csePass = ssaPass<SchemeNode>({
         const dest = defOf(inst, schemeOps);
         if (dest === undefined) continue;
 
-        const uses = usesOf(inst, schemeOps);
-        const k = key(inst, uses);
+        const k = key(inst, usesOf(inst, schemeOps));
         if (k === undefined) continue;
 
         const existing = available.get(k);
@@ -72,21 +78,37 @@ export const csePass = ssaPass<SchemeNode>({
           continue;
         }
 
-        // Everything that read `dest` reads `existing` from now on, and `dest` is left with no
-        // readers for DCE to remove. The instruction itself stays: removing it here would mean
-        // rewriting the block's own list while walking it.
-        for (const other of block.instructions) {
-          for (const v of [...usesOf(other, schemeOps)]) {
-            if (v === dest) rewriteUses(other, schemeOps, dest, existing);
-          }
-        }
-        for (const v of [...terminatorUses(block.terminator, schemeOps)]) {
-          if (v === dest) rewriteTerminatorUses(block.terminator, schemeOps, dest, existing);
-        }
-        replaced++;
+        alias.set(dest, resolve(alias, existing));
       }
     }
 
-    return { changed: replaced > 0, stats: { replaced } };
+    if (alias.size === 0) return { changed: false };
+
+    for (const block of fn.blocks.values()) {
+      for (const inst of block.instructions) {
+        for (const v of [...usesOf(inst, schemeOps)]) {
+          const to = resolve(alias, v);
+          if (to !== v) rewriteUses(inst, schemeOps, v, to);
+        }
+      }
+      for (const v of [...terminatorUses(block.terminator, schemeOps)]) {
+        const to = resolve(alias, v);
+        if (to !== v) rewriteTerminatorUses(block.terminator, schemeOps, v, to);
+      }
+    }
+
+    return { changed: true, stats: { replaced: alias.size } };
   },
 });
+
+/** Follow a chain of replacements to the value that is actually computed. */
+function resolve(alias: ReadonlyMap<ValueId, ValueId>, v: ValueId): ValueId {
+  let cur = v;
+  const seen = new Set<ValueId>([cur]);
+  for (;;) {
+    const next = alias.get(cur);
+    if (next === undefined || seen.has(next)) return cur;
+    seen.add(next);
+    cur = next;
+  }
+}

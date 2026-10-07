@@ -10,6 +10,7 @@ import { verifySSASafe } from "../../src/ssa/verify.ts";
 import { compile } from "./pipeline.ts";
 import { optimizeModule, type OptimizeStats } from "./optimize.ts";
 import { lower, type LoweredProgram } from "./lower.ts";
+import { convertSelfTailCalls } from "./tail-to-loop.ts";
 import { run, type RunOptions, type RunResult, type Value } from "./interp.ts";
 import { schemeOps, type SchemeNode } from "./ir.ts";
 import type { SSAFunction } from "../../src/ssa/ir.ts";
@@ -22,6 +23,13 @@ export interface CompileOptions {
   readonly ssa?: boolean;
   /** Run the SSA optimization passes. Default false, so tests can compare the two. */
   readonly optimize?: boolean;
+  /**
+   * Turn self tail calls into loops. Default true.
+   *
+   * Part of the lowering rather than of optimization: it decides what a frame is, and the
+   * interpreter's counters only mean something once that is settled.
+   */
+  readonly loops?: boolean;
   /** Verify the IR after every optimization pass. Slow. */
   readonly verifyEach?: boolean;
 }
@@ -39,9 +47,20 @@ export interface CompiledProgram {
 export function compileProgram(source: string, opts: CompileOptions = {}): CompiledProgram {
   const tree = compile(source, { fuse: opts.fuse ?? false });
   const lowered = lower(tree);
+
+  // Before the SSA construction, never after. A self tail call becomes an assignment to a frame
+  // slot, and a slot assigned twice is exactly what SSA forbids — the construction is what turns
+  // those two definitions into a phi. Running this afterwards leaves the frame reads in the header
+  // resolving to the bare parameter name, which is what a phi with one operand looks like once the
+  // trivial-phi rule has removed it.
+  if (opts.loops ?? true) {
+    for (const fn of lowered.functions.values()) convertSelfTailCalls(fn);
+  }
+
   if (opts.ssa === false) {
     return { tree, lowered, module: lowered.functions, entry: lowered.entry };
   }
+
   const module = new Map<string, SSAFunction<SchemeNode>>();
   for (const [name, fn] of lowered.functions) {
     // What the lowering produces is *not* SSA: a value produced in both arms of an `if` is one
@@ -54,6 +73,7 @@ export function compileProgram(source: string, opts: CompileOptions = {}): Compi
     }
     module.set(name, ssa);
   }
+
   const optimizeStats =
     opts.optimize === true ? optimizeModule(module, { verifyEach: opts.verifyEach ?? false }) : undefined;
 
